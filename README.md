@@ -36,3 +36,4 @@ MIT License. Provided as-is with no warranty.
 ## Compatibility
 
 Supports all Acer devices listed as compatible with Linuwu and DAMX.
+# Linuwu-DAMX-Installer
