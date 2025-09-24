@@ -1,0 +1,16 @@
+# System files
+*.DS_Store
+*.swp
+*.bak
+*.log
+
+# Python
+__pycache__/
+*.pyc
+
+# OS-specific
+Thumbs.db
+ehthumbs.db
+
+# Archive
+*.zip
