@@ -34,7 +34,7 @@ cd DAMX-0.9.1
 
 # Disable driver install logic
 echo ">>> Skipping driver install by overriding driver installer..."
-echo -e "#!/bin/bash\necho 'Driver install skipped. Using pre-installed Linuwu-Sense.'" > Linuwu-Sense/install.sh
+printf '#!/bin/bash\necho "Driver install skipped. Using pre-installed Linuwu-Sense."\n' > Linuwu-Sense/install.sh
 chmod +x Linuwu-Sense/install.sh
 
 # Run main setup script (should still install daemon + GUI)
