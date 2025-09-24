@@ -11,24 +11,25 @@ set IS_SUPPORTED 0
 set KVER (uname -r)
 set BUILD_DIR /usr/lib/modules/$KVER/build
 set CC_CLANG 0
+set MAKE_FLAGS
 
 # Check for Clang compiler tag in the kernel build version
 if test -f "$BUILD_DIR/include/config/cc/version.text"
     if grep -iq "clang" $BUILD_DIR/include/config/cc/version.text
         set CC_CLANG 1
+        set MAKE_FLAGS LLVM=1 CC=clang
     end
 else if test -f /proc/version
     if grep -iq "clang" /proc/version
         set CC_CLANG 1
+        set MAKE_FLAGS LLVM=1 CC=clang
     end
 end
 
 if test $CC_CLANG -eq 1
     echo ">>> Kernel was built with Clang. Using LLVM=1 CC=clang..."
-    set MAKE_CMD "sudo make LLVM=1 CC=clang install"
 else
     echo ">>> Kernel appears to use GCC. Using standard make..."
-    set MAKE_CMD "sudo make install"
 end
 for model in $SUPPORTED_MODELS
     if string match -q "*$model*" "$ACER_MODEL"
@@ -61,15 +62,21 @@ else
 end
 
 cd $LINUX_MODULE_DIR
-echo ">>> Building Linuwu-Sense with Clang..."
+echo ">>> Building Linuwu-Sense kernel module..."
 sudo make clean
-eval $MAKE_CMD
+sudo make $MAKE_FLAGS install
 
-echo -n ">>> Verifying module install... "
-if lsmod | grep -q linuwu_sense
-    echo "OK"
+echo ">>> Loading Linuwu-Sense module..."
+sudo modprobe -r linuwu_sense >/dev/null 2>&1
+if sudo modprobe linuwu_sense
+    echo -n ">>> Verifying module install... "
+    if lsmod | grep -q linuwu_sense
+        echo "OK"
+    else
+        echo "FAILED - module not loaded"
+    end
 else
-    echo "FAILED - module not loaded"
+    echo "❌ Failed to load linuwu_sense. Check dmesg for details."
 end
 
 echo ">>> Blacklisting acer_wmi to prevent conflicts..."
@@ -85,9 +92,32 @@ set ALIAS_PATH ~/.config/fish/functions/linuwu_rebuild.fish
 echo ">>> Creating 'linuwu_rebuild' function..."
 mkdir -p ~/.config/fish/functions
 echo "function linuwu_rebuild" > $ALIAS_PATH
-echo "    cd $LINUX_MODULE_DIR" >> $ALIAS_PATH
+echo "    set MODULE_DIR \"$LINUX_MODULE_DIR\"" >> $ALIAS_PATH
+echo "    if not test -d \$MODULE_DIR" >> $ALIAS_PATH
+echo "        echo \"❌ Linuwu-Sense source directory not found at \$MODULE_DIR\"" >> $ALIAS_PATH
+echo "        return 1" >> $ALIAS_PATH
+echo "    end" >> $ALIAS_PATH
+echo "" >> $ALIAS_PATH
+echo "    set KVER (uname -r)" >> $ALIAS_PATH
+echo "    set BUILD_DIR /usr/lib/modules/\$KVER/build" >> $ALIAS_PATH
+echo "    set MAKE_FLAGS" >> $ALIAS_PATH
+echo "    if test -f \"\$BUILD_DIR/include/config/cc/version.text\"" >> $ALIAS_PATH
+echo "        if grep -iq \"clang\" \"\$BUILD_DIR/include/config/cc/version.text\"" >> $ALIAS_PATH
+echo "            set MAKE_FLAGS LLVM=1 CC=clang" >> $ALIAS_PATH
+echo "        end" >> $ALIAS_PATH
+echo "    else if test -f /proc/version" >> $ALIAS_PATH
+echo "        if grep -iq \"clang\" /proc/version" >> $ALIAS_PATH
+echo "            set MAKE_FLAGS LLVM=1 CC=clang" >> $ALIAS_PATH
+echo "        end" >> $ALIAS_PATH
+echo "    end" >> $ALIAS_PATH
+echo "" >> $ALIAS_PATH
+echo "    cd \$MODULE_DIR" >> $ALIAS_PATH
 echo "    sudo make clean" >> $ALIAS_PATH
-eval $MAKE_CMD
+echo "    if test (count \$MAKE_FLAGS) -gt 0" >> $ALIAS_PATH
+echo "        sudo make \$MAKE_FLAGS install" >> $ALIAS_PATH
+echo "    else" >> $ALIAS_PATH
+echo "        sudo make install" >> $ALIAS_PATH
+echo "    end" >> $ALIAS_PATH
 echo "end" >> $ALIAS_PATH
 
 echo ""
