@@ -1,38 +1,55 @@
-# Linuwu + DAMX Installer
+# Linuwu-DAMX Unified Installer
 
-This repository contains a complete installation suite for:
+This repository provides a high-performance, automated deployment suite for the Linuwu-Sense kernel driver and the DAMX (Div Acer Manager Max) GUI suite. It is engineered specifically for Acer Nitro, Predator, Helios, and Triton series laptops running Arch Linux or CachyOS.
 
-- **Linuwu-Sense**: A kernel module for enhanced Acer fan/RGB control.
-- **DAMX (Div Acer Manager Max)**: A GUI and background daemon to control Acer laptop features.
+## Core Features
 
-## Features
+- **Automated DKMS Integration**: The Linuwu-Sense driver is registered via Dynamic Kernel Module Support (DKMS), ensuring the module persists and automatically rebuilds during kernel updates without manual user intervention.
+- **CachyOS Optimization**: Logic includes automatic detection of the CachyOS kernel to resolve and install the appropriate LLVM/Clang headers instead of generic linux-headers.
+- **System-Native Dependency Management**: Installation scripts prefer pacman-managed Python packages (pyside6, requests) over pip to maintain system integrity and avoid environment conflicts.
+- **Conflict Mitigation**: Automatically handles the blacklisting of the legacy acer_wmi module to ensure the linuwu_sense driver retains exclusive control over hardware registers.
+- **Universal Shell Support**: Includes native installation and uninstallation logic for both Bash and Fish shells.
 
-- Fish shell compatible
-- Auto-detects Clang/GCC
-- Systemd service integration
-- Full daemonized support for fan/RGB settings
-- Designed for **CachyOS** (may work on other Arch-based distros)
+## Installation Procedures
 
-## Installation
+Ensure you have an active internet connection and that your system is up to date before running the installer.
 
-```bash
-# Clone the repo and run the installers
-cd damx-installer
-fish install-damx.fish
-
-cd ../linuwu-installer
-fish install-linuwu.fish
-fish install-linuwu-rebuild.fish
+### Fish Shell Users
+```fish
+./setup.fish
 ```
 
-## Auto-Rebuild After Kernel Update
+### Bash and Other Shell Users
+```bash
+./install.sh
+```
 
-The `linuwu-rebuild.service` ensures your kernel module is rebuilt after each reboot or kernel upgrade.
+## Verification and Validation
 
-## License
+After installation, verify the state of the system using the following commands:
 
-MIT License. Provided as-is with no warranty.
+1.  **Driver Status**: Run `dkms status` to confirm `linuwu-sense` is listed as `installed`.
+2.  **Kernel Module**: Run `lsmod | grep linuwu_sense` to ensure the module is actively loaded.
+3.  **Application Daemon**: Run `systemctl --user status damx-daemon` to confirm the background manager is active.
 
-## Compatibility
+## Uninstallation
 
-Supports all Acer devices listed as compatible with Linuwu and DAMX.
+To safely revert all system modifications, including the removal of DKMS modules, blacklists, and application data:
+
+### Fish Shell
+```fish
+./uninstall.fish
+```
+
+### Bash Shell
+```bash
+./uninstall.sh
+```
+
+## Technical Notes
+
+- **Secure Boot**: If Secure Boot is enabled, you must manually sign the linuwu_sense module or disable Secure Boot to allow the kernel to load the driver.
+- **Hardware Support**: This suite is intended for Acer laptops that utilize the WMI interface for fan and RGB control. Installation on unsupported hardware will result in a compatibility warning.
+
+---
+*Maintained for the Acer Linux Community.*

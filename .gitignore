@@ -1,16 +1,25 @@
-# System files
-*.DS_Store
-*.swp
-*.bak
-*.log
-
 # Python
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+*.so
+.venv/
+venv/
 
-# OS-specific
-Thumbs.db
-ehthumbs.db
-
-# Archive
+# Installer Artifacts
+*.tar.xz
+*.tar.gz
 *.zip
+
+# System/Development
+.DS_Store
+.vscode/
+.idea/
+*.log
+
+# Driver build leftovers
+*.o
+*.ko
+*.mod.c
+*.symvers
+*.order
