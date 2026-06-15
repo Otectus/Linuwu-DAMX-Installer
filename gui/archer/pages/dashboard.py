@@ -10,6 +10,8 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Gtk, Adw
 
+from archer.widgets.hero import HeroSummary
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -136,6 +138,10 @@ class DashboardPage(Gtk.Box):
 
         outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16)
         clamp.set_child(outer)
+
+        # --- 0. Hero summary (one-glance health) ---
+        self.hero = HeroSummary()
+        outer.append(self.hero)
 
         # --- 1. CPU Card ---
         self._build_cpu_card(outer)
@@ -383,8 +389,13 @@ class DashboardPage(Gtk.Box):
     # ------------------------------------------------------------------
     # Public API – called from window
     # ------------------------------------------------------------------
+    def update_status(self, status):
+        """Forward the shared status model to the hero badges."""
+        self.hero.update_status(status)
+
     def load_settings(self, data):
         """Populate static info from the initial settings fetch."""
+        self.hero.load_settings(data)
         system = data.get("system_info", {})
         self.cpu_model_label.set_label(system.get("cpu_model", "Unknown CPU"))
         self.gpu_model_label.set_label(system.get("gpu_model", "Unknown GPU"))
@@ -410,6 +421,7 @@ class DashboardPage(Gtk.Box):
         """Refresh all live gauges. Called on the main thread via
         GLib.idle_add from the polling loop.
         """
+        self.hero.update_monitoring(data)
         # CPU
         cpu_temp = data.get("cpu_temp", 0)
         cpu_usage = data.get("cpu_usage", 0)

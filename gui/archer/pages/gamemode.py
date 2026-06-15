@@ -8,6 +8,7 @@ gi.require_version("Adw", "1")
 from gi.repository import Gtk, Adw
 
 from archer.widgets.async_set import async_set
+from archer.widgets.capability_row import set_group_supported
 
 
 class GameModePage(Gtk.Box):
@@ -96,7 +97,10 @@ class GameModePage(Gtk.Box):
         features = data.get("features", [])
         has_game_mode = "game_mode" in features
 
-        self._status_group.set_visible(has_game_mode)
+        set_group_supported(
+            self._status_group, has_game_mode,
+            "Game Mode needs the Archer daemon's performance integration "
+            "(thermal profile + CPU governor support).")
 
         if has_game_mode:
             active = data.get("game_mode", False)

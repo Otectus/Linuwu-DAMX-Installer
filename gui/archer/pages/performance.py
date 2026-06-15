@@ -13,6 +13,7 @@ gi.require_version("Adw", "1")
 from gi.repository import Gtk, Adw, GLib
 
 from archer.widgets.async_set import async_set
+from archer.widgets.capability_row import set_group_supported
 
 
 # Mapping from UI label to daemon profile string.
@@ -172,12 +173,17 @@ class PerformancePage(Gtk.Box):
         """Populate the page from a full settings dict returned by the daemon."""
         features = data.get("features", [])
 
-        # Show or hide entire sections based on feature support
+        # Disable (with an explanation) sections the hardware can't support,
+        # rather than hiding them silently.
         has_thermal = "thermal_profiles" in features
         has_fan = "fan_control" in features
 
-        self._profile_group.set_visible(has_thermal)
-        self._fan_group.set_visible(has_fan)
+        set_group_supported(
+            self._profile_group, has_thermal,
+            "This laptop's firmware doesn't expose switchable performance profiles.")
+        set_group_supported(
+            self._fan_group, has_fan,
+            "Fan control requires the Linuwu-Sense driver and supported hardware.")
 
         # Power source
         self._on_ac = data.get("power_source_ac", True)

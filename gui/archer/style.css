@@ -213,3 +213,92 @@ preferencesgroup > box > label.title {
     font-weight: bold;
     letter-spacing: 0.5px;
 }
+
+/* === Sidebar (NavigationSplitView) === */
+list.navigation-sidebar {
+    background: transparent;
+    padding: 6px;
+}
+
+list.navigation-sidebar > row {
+    border-radius: 8px;
+    margin: 2px 4px;
+}
+
+list.navigation-sidebar > row:selected {
+    background-color: alpha(#1B89D8, 0.22);
+    color: #cfe6fb;
+}
+
+/* === Dashboard hero === */
+.hero {
+    background: linear-gradient(135deg, #181826, #15151b);
+    border: 1px solid #2a2a35;
+}
+
+.hero-stats {
+    margin-top: 4px;
+}
+
+.hero-stat-title {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 1px;
+    color: #8b8b96;
+    text-transform: uppercase;
+}
+
+.hero-stat-value {
+    font-size: 18px;
+    font-weight: bold;
+    color: #f4f4f5;
+}
+
+/* === Status badges === */
+.status-badge {
+    font-size: 11px;
+    font-weight: bold;
+    padding: 3px 10px;
+    border-radius: 10px;
+}
+
+.status-badge-ok {
+    color: #4ade80;
+    background-color: alpha(#4ade80, 0.15);
+}
+
+.status-badge-bad {
+    color: #f87171;
+    background-color: alpha(#f87171, 0.15);
+}
+
+.status-badge-warn {
+    color: #fbbf24;
+    background-color: alpha(#f59e0b, 0.18);
+}
+
+.status-badge-neutral {
+    color: #a1a1aa;
+    background-color: alpha(#a1a1aa, 0.12);
+}
+
+/* === Persistent status footer === */
+.status-footer {
+    background-color: #131316;
+    border-top: 1px solid #27272a;
+}
+
+.status-dot {
+    font-size: 11px;
+}
+
+.status-dot.dot-ok { color: #4ade80; }
+.status-dot.dot-bad { color: #f87171; }
+.status-dot.dot-warn { color: #fbbf24; }
+.status-dot.dot-neutral { color: #71717a; }
+
+/* === Accessibility: visible keyboard focus === */
+*:focus-visible {
+    outline: 2px solid #1B89D8;
+    outline-offset: 1px;
+}

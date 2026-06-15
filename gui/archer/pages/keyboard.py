@@ -11,6 +11,7 @@ gi.require_version("Adw", "1")
 from gi.repository import Gtk, Adw, Gdk
 
 from archer.widgets.async_set import async_set
+from archer.widgets.capability_row import set_group_supported
 
 
 # ── helpers ──────────────────────────────────────────────────────────
@@ -212,13 +213,17 @@ class KeyboardPage(Gtk.Box):
         """
         features = data.get("features", [])
 
-        # Show/hide zone colours
+        # Per-zone colours
         has_per_zone = "keyboard_per_zone" in features
-        self.zone_group.set_visible(has_per_zone)
+        set_group_supported(
+            self.zone_group, has_per_zone,
+            "Per-zone RGB needs a 4-zone keyboard and the Linuwu-Sense driver.")
 
-        # Show/hide effects
+        # Effects
         has_effects = "keyboard_effects" in features
-        self.effects_group.set_visible(has_effects)
+        set_group_supported(
+            self.effects_group, has_effects,
+            "Lighting effects need a 4-zone keyboard and the Linuwu-Sense driver.")
 
         # Backlight timeout
         timeout_val = data.get("backlight_timeout")

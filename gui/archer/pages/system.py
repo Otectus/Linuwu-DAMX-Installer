@@ -10,6 +10,7 @@ from gi.repository import Gtk, Adw
 import subprocess
 
 from archer.widgets.async_set import async_set
+from archer.widgets.capability_row import set_group_supported
 
 
 class SystemPage(Gtk.Box):
@@ -141,8 +142,12 @@ class SystemPage(Gtk.Box):
         sys_info = data.get("system_info", {})
 
         # Feature visibility
-        self.display_group.set_visible("lcd_override" in features)
-        self.boot_group.set_visible("boot_animation_sound" in features)
+        set_group_supported(
+            self.display_group, "lcd_override" in features,
+            "LCD overdrive control isn't supported on this model.")
+        set_group_supported(
+            self.boot_group, "boot_animation_sound" in features,
+            "Boot animation/sound control isn't supported on this model.")
 
         # LCD override
         lcd = data.get("lcd_override")

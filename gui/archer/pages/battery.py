@@ -9,6 +9,7 @@ from gi.repository import Gtk, Adw
 
 from archer.widgets.async_set import async_set
 from archer.widgets.confirm import confirm_action
+from archer.widgets.capability_row import set_group_supported
 
 
 class BatteryPage(Gtk.Box):
@@ -169,10 +170,16 @@ class BatteryPage(Gtk.Box):
         self.bat_status_row.set_subtitle(bat_info.get("status", "Unknown"))
         self.bat_time_row.set_subtitle(bat_info.get("time_remaining", "--") or "--")
 
-        # Feature visibility
-        self.limit_group.set_visible("battery_limiter" in features)
-        self.calibration_group.set_visible("battery_calibration" in features)
-        self.usb_group.set_visible("usb_charging" in features)
+        # Disable unsupported features with an explanation instead of hiding.
+        set_group_supported(
+            self.limit_group, "battery_limiter" in features,
+            "Charge limiting needs the acer-wmi-battery driver and supported firmware.")
+        set_group_supported(
+            self.calibration_group, "battery_calibration" in features,
+            "Battery calibration isn't supported on this model.")
+        set_group_supported(
+            self.usb_group, "usb_charging" in features,
+            "USB power delivery control isn't supported on this model.")
 
         # Load current values
         limiter = data.get("battery_limiter")

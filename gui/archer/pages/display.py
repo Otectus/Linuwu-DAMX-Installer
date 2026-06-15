@@ -9,6 +9,7 @@ from gi.repository import Gtk, Adw
 
 from archer.widgets.async_set import async_set
 from archer.widgets.confirm import confirm_action
+from archer.widgets.capability_row import set_group_supported
 
 
 _GPU_MODES = [
@@ -111,8 +112,10 @@ class DisplayPage(Gtk.Box):
         features = data.get("features", [])
         has_display_mode = "display_mode" in features
 
-        self._status_group.set_visible(has_display_mode)
-        self._mode_group.set_visible(has_display_mode)
+        reason = ("GPU mode switching needs a hybrid-graphics laptop with "
+                  "EnvyControl installed (no NVIDIA Optimus detected).")
+        set_group_supported(self._status_group, has_display_mode, reason)
+        set_group_supported(self._mode_group, has_display_mode, reason)
 
         if has_display_mode:
             mode = data.get("display_mode", "hybrid")

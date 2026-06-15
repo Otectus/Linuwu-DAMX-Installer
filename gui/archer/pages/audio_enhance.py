@@ -8,6 +8,7 @@ gi.require_version("Adw", "1")
 from gi.repository import Gtk, Adw
 
 from archer.widgets.async_set import async_set
+from archer.widgets.capability_row import set_group_supported
 
 
 class AudioEnhancePage(Gtk.Box):
@@ -96,7 +97,9 @@ class AudioEnhancePage(Gtk.Box):
         features = data.get("features", [])
         has_audio = "audio_enhancement" in features
 
-        self._noise_group.set_visible(has_audio)
+        set_group_supported(
+            self._noise_group, has_audio,
+            "Install the Audio Enhancement module to enable noise suppression.")
 
         if has_audio:
             noise = data.get("audio_enhancement", {})

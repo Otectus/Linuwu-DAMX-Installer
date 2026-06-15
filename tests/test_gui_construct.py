@@ -130,13 +130,19 @@ def _build_pages(client):
     return pages
 
 
-def _build_window(client):
+def _build_window(client, force_fallback=False):
     import archer.window as window_mod
     window_mod.ArcherClient = lambda: client  # avoid real D-Bus
-    app = Adw.Application(application_id="io.github.archer.test")
-    win = window_mod.ArcherWindow(application=app)
-    win._on_settings_loaded(dict(FAKE_SETTINGS))
-    print("OK: ArcherWindow constructed + settings loaded")
+    original = window_mod._HAS_SPLIT_VIEW
+    window_mod._HAS_SPLIT_VIEW = not force_fallback and original
+    try:
+        app = Adw.Application(application_id="io.github.archer.test")
+        win = window_mod.ArcherWindow(application=app)
+        win._on_settings_loaded(dict(FAKE_SETTINGS))
+        layout = "fallback" if force_fallback else "split-view"
+        print(f"OK: ArcherWindow constructed + settings loaded ({layout})")
+    finally:
+        window_mod._HAS_SPLIT_VIEW = original
     return win
 
 
@@ -147,7 +153,8 @@ def main():
         return
     client = StubClient()
     _build_pages(client)
-    _build_window(client)
+    _build_window(client, force_fallback=False)
+    _build_window(client, force_fallback=True)
     print("PASS: GUI construction smoke complete")
 
 

@@ -1,5 +1,13 @@
 """
-Main application window with tab navigation.
+Main application window — sidebar Control Center.
+
+Uses Adw.NavigationSplitView (libadwaita >= 1.4) with a sidebar, a per-page
+content header, and a persistent status footer. Falls back to the classic
+ViewStack + ViewSwitcher layout on older libadwaita so the app still runs.
+
+The daemon connection / telemetry / reconnect logic is unchanged from the
+previous version — only how status is *displayed* moved into a shared
+StatusModel consumed by the header badge, footer, and dashboard hero.
 """
 
 import json
@@ -16,6 +24,8 @@ import os
 import threading
 
 from archer.client import ArcherClient
+from archer.widgets import status as status_mod
+from archer.widgets.status_footer import StatusFooter
 
 logger = logging.getLogger("archer-gui")
 from archer.pages.dashboard import DashboardPage
@@ -29,17 +39,36 @@ from archer.pages.gamemode import GameModePage
 from archer.pages.audio_enhance import AudioEnhancePage
 from archer.pages.firmware import FirmwarePage
 
+# NavigationSplitView landed in libadwaita 1.4. Module-level so tests can force
+# the fallback path.
+_HAS_SPLIT_VIEW = hasattr(Adw, "NavigationSplitView")
+
+# (page name, sidebar/header title, symbolic icon)
+_PAGE_NAV = [
+    ("dashboard", "Dashboard", "utilities-system-monitor-symbolic"),
+    ("performance", "Performance", "power-profile-performance-symbolic"),
+    ("battery", "Battery", "battery-symbolic"),
+    ("keyboard", "Keyboard", "input-keyboard-symbolic"),
+    ("system", "System", "preferences-system-symbolic"),
+    ("display", "Display Mode", "video-display-symbolic"),
+    ("gamemode", "Game Mode", "applications-games-symbolic"),
+    ("audio_enhance", "Audio", "audio-input-microphone-symbolic"),
+    ("firmware", "Firmware", "computer-symbolic"),
+    ("internals", "Internals", "applications-engineering-symbolic"),
+]
+
 
 class ArcherWindow(Adw.ApplicationWindow):
     def __init__(self, **kwargs):
         super().__init__(
-            default_width=1000,
-            default_height=700,
+            default_width=1040,
+            default_height=720,
             title="Archer",
             **kwargs,
         )
 
         self.client = ArcherClient()
+        self.status = status_mod.StatusModel()
         self.settings_data = None
         self._monitoring_timer = None
         self._stale_check_timer = None
@@ -55,6 +84,8 @@ class ArcherWindow(Adw.ApplicationWindow):
         self._reconnect_steps_s = (5, 10, 20, 60)
         self._reconnect_idx = 0
 
+        self._titles = {name: title for name, title, _ in _PAGE_NAV}
+
         # Load CSS
         self._load_css()
 
@@ -66,49 +97,41 @@ class ArcherWindow(Adw.ApplicationWindow):
 
     def _load_css(self):
         css_path = os.path.join(os.path.dirname(__file__), "style.css")
-        if os.path.exists(css_path):
+        display = Gdk.Display.get_default()
+        if os.path.exists(css_path) and display is not None:
             provider = Gtk.CssProvider()
             provider.load_from_path(css_path)
             Gtk.StyleContext.add_provider_for_display(
-                Gdk.Display.get_default(),
+                display,
                 provider,
                 Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
             )
 
+    # ------------------------------------------------------------------
+    # UI construction
+    # ------------------------------------------------------------------
     def _build_ui(self):
-        # Toast overlay for notifications
         self.toast_overlay = Adw.ToastOverlay()
         self.set_content(self.toast_overlay)
 
-        # Main layout
-        main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        self.toast_overlay.set_child(main_box)
+        self.status_footer = StatusFooter()
 
-        # Header bar with view switcher
-        header = Adw.HeaderBar()
-        self.view_switcher_title = Adw.ViewSwitcherTitle(title="Archer")
-        header.set_title_widget(self.view_switcher_title)
-
-        # Connection status indicator
-        self.status_label = Gtk.Label(label="Connecting...")
-        self.status_label.add_css_class("status-label")
-        header.pack_end(self.status_label)
-
-        main_box.append(header)
-
-        # View stack for tab pages
+        # The page stack is shared by both layouts.
         self.view_stack = Adw.ViewStack()
         self.view_stack.set_vexpand(True)
-        self.view_switcher_title.set_stack(self.view_stack)
+        self._create_pages()
 
-        # Bottom view switcher bar (for narrow windows)
-        switcher_bar = Adw.ViewSwitcherBar(stack=self.view_stack)
-        self.view_switcher_title.connect(
-            "notify::title-visible",
-            lambda obj, _: switcher_bar.set_reveal(obj.get_title_visible()),
-        )
+        # Status label shown in the content header (kept under the same
+        # attribute name the monitoring code already uses).
+        self.status_label = Gtk.Label(label="Connecting…")
+        self.status_label.add_css_class("status-label")
 
-        # Create pages
+        if _HAS_SPLIT_VIEW:
+            self._build_split_view()
+        else:
+            self._build_fallback_view()
+
+    def _create_pages(self):
         self.dashboard_page = DashboardPage(self.client)
         self.performance_page = PerformancePage(self.client)
         self.battery_page = BatteryPage(self.client)
@@ -120,41 +143,125 @@ class ArcherWindow(Adw.ApplicationWindow):
         self.audio_enhance_page = AudioEnhancePage(self.client)
         self.firmware_page = FirmwarePage(self.client)
 
-        # Add pages to stack
-        self.view_stack.add_titled_with_icon(
-            self.dashboard_page, "dashboard", "Dashboard", "utilities-system-monitor-symbolic"
-        )
-        self.view_stack.add_titled_with_icon(
-            self.performance_page, "performance", "Performance", "power-profile-performance-symbolic"
-        )
-        self.view_stack.add_titled_with_icon(
-            self.battery_page, "battery", "Battery", "battery-symbolic"
-        )
-        self.view_stack.add_titled_with_icon(
-            self.keyboard_page, "keyboard", "Keyboard", "input-keyboard-symbolic"
-        )
-        self.view_stack.add_titled_with_icon(
-            self.system_page, "system", "System", "preferences-system-symbolic"
-        )
-        self.view_stack.add_titled_with_icon(
-            self.internals_page, "internals", "Internals", "applications-engineering-symbolic"
-        )
-        self.view_stack.add_titled_with_icon(
-            self.display_page, "display", "Display Mode", "video-display-symbolic"
-        )
-        self.view_stack.add_titled_with_icon(
-            self.gamemode_page, "gamemode", "Game Mode", "applications-games-symbolic"
-        )
-        self.view_stack.add_titled_with_icon(
-            self.audio_enhance_page, "audio_enhance", "Audio", "audio-input-microphone-symbolic"
-        )
-        self.view_stack.add_titled_with_icon(
-            self.firmware_page, "firmware", "Firmware", "computer-symbolic"
+        self._pages = {
+            "dashboard": self.dashboard_page,
+            "performance": self.performance_page,
+            "battery": self.battery_page,
+            "keyboard": self.keyboard_page,
+            "system": self.system_page,
+            "internals": self.internals_page,
+            "display": self.display_page,
+            "gamemode": self.gamemode_page,
+            "audio_enhance": self.audio_enhance_page,
+            "firmware": self.firmware_page,
+        }
+        for name, title, icon in _PAGE_NAV:
+            self.view_stack.add_titled_with_icon(self._pages[name], name, title, icon)
+
+    def _build_split_view(self):
+        # --- Sidebar ---
+        self.sidebar_list = Gtk.ListBox()
+        self.sidebar_list.add_css_class("navigation-sidebar")
+        self.sidebar_list.set_selection_mode(Gtk.SelectionMode.SINGLE)
+        self._sidebar_rows = {}
+        for name, title, icon in _PAGE_NAV:
+            row = Gtk.ListBoxRow()
+            box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12,
+                          margin_top=8, margin_bottom=8, margin_start=8, margin_end=8)
+            box.append(Gtk.Image(icon_name=icon))
+            label = Gtk.Label(label=title, xalign=0)
+            box.append(label)
+            row.set_child(box)
+            row._page_name = name
+            row.set_tooltip_text(title)
+            row.update_property([Gtk.AccessibleProperty.LABEL], [title])
+            self.sidebar_list.append(row)
+            self._sidebar_rows[name] = row
+        self.sidebar_list.connect("row-selected", self._on_sidebar_selected)
+
+        sidebar_scroll = Gtk.ScrolledWindow(
+            hscrollbar_policy=Gtk.PolicyType.NEVER, vexpand=True)
+        sidebar_scroll.set_child(self.sidebar_list)
+
+        sidebar_toolbar = Adw.ToolbarView()
+        sidebar_header = Adw.HeaderBar()
+        sidebar_header.set_title_widget(
+            Adw.WindowTitle(title="Archer", subtitle="Control Center"))
+        sidebar_toolbar.add_top_bar(sidebar_header)
+        sidebar_toolbar.set_content(sidebar_scroll)
+        sidebar_page = Adw.NavigationPage(title="Archer", child=sidebar_toolbar)
+
+        # --- Content ---
+        content_toolbar = Adw.ToolbarView()
+        self.content_header = Adw.HeaderBar()
+        self.content_title = Adw.WindowTitle(title="Dashboard", subtitle="")
+        self.content_header.set_title_widget(self.content_title)
+        self.content_header.pack_end(self.status_label)
+        content_toolbar.add_top_bar(self.content_header)
+        content_toolbar.set_content(self.view_stack)
+        content_toolbar.add_bottom_bar(self.status_footer)
+        self.content_page = Adw.NavigationPage(title="Dashboard", child=content_toolbar)
+
+        self.split_view = Adw.NavigationSplitView()
+        self.split_view.set_sidebar(sidebar_page)
+        self.split_view.set_content(self.content_page)
+        self.toast_overlay.set_child(self.split_view)
+
+        # Select the first page.
+        self.sidebar_list.select_row(self._sidebar_rows["dashboard"])
+
+    def _build_fallback_view(self):
+        """Classic ViewStack + ViewSwitcher layout for libadwaita < 1.4."""
+        main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self.toast_overlay.set_child(main_box)
+
+        header = Adw.HeaderBar()
+        self.view_switcher_title = Adw.ViewSwitcherTitle(title="Archer")
+        self.view_switcher_title.set_stack(self.view_stack)
+        header.set_title_widget(self.view_switcher_title)
+        header.pack_end(self.status_label)
+        main_box.append(header)
+
+        switcher_bar = Adw.ViewSwitcherBar(stack=self.view_stack)
+        self.view_switcher_title.connect(
+            "notify::title-visible",
+            lambda obj, _: switcher_bar.set_reveal(obj.get_title_visible()),
         )
 
         main_box.append(self.view_stack)
         main_box.append(switcher_bar)
+        main_box.append(self.status_footer)
 
+    def _on_sidebar_selected(self, _listbox, row):
+        if row is None:
+            return
+        name = row._page_name
+        self.view_stack.set_visible_child_name(name)
+        title = self._titles.get(name, "Archer")
+        self.content_title.set_title(title)
+        self.content_page.set_title(title)
+        # Collapse to content on narrow/mobile layouts.
+        if hasattr(self, "split_view"):
+            self.split_view.set_show_content(True)
+
+    # ------------------------------------------------------------------
+    # Status display
+    # ------------------------------------------------------------------
+    def _set_connection(self, state):
+        """Single place that updates the header badge, footer, and hero."""
+        self.status.connection = state
+        self.status_label.set_label(self.status.connection_label)
+        ok = state == status_mod.CONNECTED
+        self.status_label.remove_css_class("status-connected")
+        self.status_label.remove_css_class("status-disconnected")
+        self.status_label.add_css_class(
+            "status-connected" if ok else "status-disconnected")
+        self.status_footer.update(self.status)
+        self.dashboard_page.update_status(self.status)
+
+    # ------------------------------------------------------------------
+    # Data loading / monitoring
+    # ------------------------------------------------------------------
     def _initial_load(self):
         """Load initial settings from daemon."""
         thread = threading.Thread(target=self._fetch_settings, daemon=True)
@@ -168,30 +275,19 @@ class ArcherWindow(Adw.ApplicationWindow):
     def _on_settings_loaded(self, data):
         if data:
             self.settings_data = data
-            self.status_label.set_label("Connected")
-            self.status_label.remove_css_class("status-disconnected")
-            self.status_label.add_css_class("status-connected")
+            self.status.update_from_settings(data)
             self._reconnect_idx = 0  # success — reset backoff
             self._is_stale = False   # cleared so _check_staleness re-arms cleanly
+            self._set_connection(status_mod.CONNECTED)
 
             # Push settings to all pages
-            self.dashboard_page.load_settings(data)
-            self.performance_page.load_settings(data)
-            self.battery_page.load_settings(data)
-            self.keyboard_page.load_settings(data)
-            self.system_page.load_settings(data)
-            self.internals_page.load_settings(data)
-            self.display_page.load_settings(data)
-            self.gamemode_page.load_settings(data)
-            self.audio_enhance_page.load_settings(data)
-            self.firmware_page.load_settings(data)
+            for page in self._pages.values():
+                page.load_settings(data)
 
             # Start monitoring timer
             self._start_monitoring()
         else:
-            self.status_label.set_label("Daemon Offline")
-            self.status_label.remove_css_class("status-connected")
-            self.status_label.add_css_class("status-disconnected")
+            self._set_connection(status_mod.OFFLINE)
 
             # Surface the underlying init error in a toast (one per failure)
             err = self.client.init_error
@@ -221,9 +317,7 @@ class ArcherWindow(Adw.ApplicationWindow):
     def _start_monitoring(self):
         """Subscribe to TelemetryUpdated and start the staleness watchdog.
 
-        Replaces the previous polling loop, which spawned a new thread every
-        2 seconds and would silently pile up zombie threads if any single
-        D-Bus call hung. The daemon now pushes telemetry on its own timer.
+        The daemon pushes telemetry on its own timer; the GUI only listens.
         """
         # Drop any previous subscriptions. After a daemon restart the proxy
         # in the client is fresh, so old signal matches are dead.
@@ -273,9 +367,7 @@ class ArcherWindow(Adw.ApplicationWindow):
         self._last_telemetry_ts = time.monotonic()
         if self._is_stale:
             self._is_stale = False
-            self.status_label.set_label("Connected")
-            self.status_label.remove_css_class("status-disconnected")
-            self.status_label.add_css_class("status-connected")
+            self._set_connection(status_mod.CONNECTED)
         self.dashboard_page.update_monitoring(data)
 
     def _on_audio_changed(self, enabled):
@@ -308,9 +400,7 @@ class ArcherWindow(Adw.ApplicationWindow):
         if time.monotonic() - self._last_telemetry_ts > self._STALE_AFTER_S:
             if not self._is_stale:
                 self._is_stale = True
-                self.status_label.set_label("Stale")
-                self.status_label.remove_css_class("status-connected")
-                self.status_label.add_css_class("status-disconnected")
+                self._set_connection(status_mod.STALE)
                 # Schedule a reconnect attempt using the same backoff path.
                 self._reconnect_idx = 0
                 GLib.timeout_add_seconds(
