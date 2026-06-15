@@ -22,7 +22,15 @@ compatible.
   `N of M installed`, folds in verification pass/total, and exits non-zero on
   real failures instead of always printing "all installed".
 - **GPU module no longer leaks a broken `mkinitcpio` shim.** The no-op shim is
-  now trap-protected and always restored even if `envycontrol` fails.
+  explicitly restored on every exit path (success or `envycontrol` failure).
+  A RETURN trap was avoided because bash RETURN traps aren't function-scoped
+  and would re-fire on later modules, crashing with `_shim_path: unbound
+  variable` under `set -u`.
+- **GPU module is resilient to a missing/conflicting NVIDIA setup.** It now
+  accepts any existing NVIDIA driver (incl. kernel-bundled `*-nvidia-open`)
+  instead of forcing a conflicting `nvidia-dkms`, and fails cleanly with a
+  clear message if `envycontrol` couldn't be installed (e.g. AUR offline)
+  rather than running `envycontrol` that isn't on PATH.
 - **Safer GRUB edits.** `mktemp` failures are caught and temp files cleaned up
   in `add/remove_grub_params`.
 - **Broader Clang-kernel detection** via `CONFIG_CC_IS_CLANG` (`/proc/config.gz`,

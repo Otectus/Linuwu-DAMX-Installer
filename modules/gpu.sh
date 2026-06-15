@@ -19,8 +19,8 @@ module_check_installed() {
 }
 
 # Remove the no-op mkinitcpio shim and restore any original wrapper. Safe to
-# call repeatedly; used both on the happy path and from a RETURN trap so the
-# shim is never left behind if envycontrol fails or is interrupted.
+# call repeatedly; called explicitly on every exit path (no RETURN trap — those
+# persist past this function under bash and would fire on later modules).
 _gpu_restore_mkinitcpio() {
     local shim_path="$1" had_existing="$2"
     run_sudo rm -f "$shim_path"
@@ -29,21 +29,49 @@ _gpu_restore_mkinitcpio() {
     fi
 }
 
+# Return 0 if any usable NVIDIA kernel driver is already present. Accept every
+# variant — nvidia, nvidia-dkms, nvidia-open(-dkms), or a kernel-bundled module
+# such as linux-cachyos-lts-nvidia-open — so we never force a conflicting
+# package onto a system that already has one.
+_nvidia_driver_present() {
+    modinfo nvidia &>/dev/null && return 0
+    pacman -Qq 2>/dev/null | grep -qiE '^nvidia(-open)?(-dkms)?$|-nvidia(-open)?$' && return 0
+    return 1
+}
+
 module_install() {
-    # Ensure NVIDIA driver is installed
-    if ! pacman -Qi nvidia &>/dev/null && ! pacman -Qi nvidia-dkms &>/dev/null; then
+    # Ensure an NVIDIA kernel driver is present (don't clobber an existing one).
+    if _nvidia_driver_present; then
+        debug "NVIDIA kernel driver already present; skipping nvidia-dkms install."
+    else
         log "NVIDIA driver not installed. Installing nvidia-dkms..."
-        run_sudo pacman -S --needed --noconfirm nvidia-dkms nvidia-utils
-        INSTALLED_PACKAGES+=" nvidia-dkms nvidia-utils"
+        if run_sudo pacman -S --needed --noconfirm nvidia-dkms nvidia-utils; then
+            INSTALLED_PACKAGES+=" nvidia-dkms nvidia-utils"
+        else
+            warn "Could not install nvidia-dkms (it may conflict with an existing NVIDIA package)."
+            warn "Continuing — EnvyControl works with whatever NVIDIA driver is already installed."
+        fi
     fi
 
-    # Install EnvyControl
-    if [[ -n "$AUR_HELPER" ]]; then
+    # Install EnvyControl (skip if it's already on PATH).
+    if has_cmd envycontrol; then
+        debug "EnvyControl already installed."
+    elif [[ -n "$AUR_HELPER" ]]; then
         log "Installing EnvyControl via $AUR_HELPER..."
-        run "$AUR_HELPER" -S --needed --noconfirm envycontrol
+        run "$AUR_HELPER" -S --needed --noconfirm envycontrol \
+            || warn "$AUR_HELPER could not install envycontrol (network/AUR issue?)."
     else
         log "No AUR helper found. Installing EnvyControl via pip..."
         run pip install envycontrol --break-system-packages 2>/dev/null || warn "pip install encountered issues."
+    fi
+
+    # If EnvyControl still isn't available, fail cleanly BEFORE touching the
+    # mkinitcpio shim — otherwise we'd create a shim we then have to roll back
+    # and the mode switch can't work anyway.
+    if [[ "${DRY_RUN:-0}" -eq 0 ]] && ! has_cmd envycontrol; then
+        warn "EnvyControl is not installed (AUR/pip unavailable?). Skipping GPU mode switch."
+        warn "Install it manually, then re-run: ./install.sh --modules gpu"
+        return 1
     fi
 
     # GPU mode selection
@@ -78,19 +106,24 @@ module_install() {
 exit 0
 SHIM
     run_sudo chmod 755 "$_shim_path"
-    # Guarantee the shim is removed and any original wrapper restored even if
-    # envycontrol exits non-zero or the function returns early.
-    trap '_gpu_restore_mkinitcpio "$_shim_path" "$_had_existing"' RETURN
 
+    # Run envycontrol, then ALWAYS restore the shim on both success and failure.
+    # (No RETURN trap: bash RETURN traps aren't function-scoped without
+    # 'functrace', so one set here would re-fire on later modules' returns and,
+    # with the now-unset locals under 'set -u', crash with "_shim_path: unbound
+    # variable".)
+    local _rc=0
     if [[ "$gpu_mode" = "hybrid" ]]; then
-        run_sudo envycontrol -s hybrid --rtd3 2 || { warn "envycontrol failed to set hybrid mode."; return 1; }
+        run_sudo envycontrol -s hybrid --rtd3 2 || _rc=1
     else
-        run_sudo envycontrol -s "$gpu_mode" || { warn "envycontrol failed to set $gpu_mode mode."; return 1; }
+        run_sudo envycontrol -s "$gpu_mode" || _rc=1
     fi
-
-    # Restore original wrapper now (clear the trap so it doesn't run twice).
     _gpu_restore_mkinitcpio "$_shim_path" "$_had_existing"
-    trap - RETURN
+
+    if [[ "$_rc" -ne 0 ]]; then
+        warn "envycontrol failed to set $gpu_mode mode."
+        return 1
+    fi
 
     # Now rebuild initramfs properly (single preset, with timeout, bypasses wrapper)
     rebuild_initramfs
@@ -112,12 +145,11 @@ module_uninstall() {
         fi
         printf '#!/bin/sh\nexit 0\n' | run_sudo tee "$_shim_path" > /dev/null
         run_sudo chmod 755 "$_shim_path"
-        trap '_gpu_restore_mkinitcpio "$_shim_path" "$_had_existing"' RETURN
 
         run_sudo envycontrol --reset 2>/dev/null || true
 
+        # Explicit restore (no RETURN trap — see module_install for why).
         _gpu_restore_mkinitcpio "$_shim_path" "$_had_existing"
-        trap - RETURN
 
         rebuild_initramfs
     fi
