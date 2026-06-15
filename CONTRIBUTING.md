@@ -22,15 +22,26 @@ sudo pacman -S shellcheck bash-bats python
 ## Running Tests
 
 ```bash
-# Run all tests
-bats tests/
+# Shell unit tests (Bats)
+bats tests/                  # all
+bats tests/detect.bats       # one file
+bats -t tests/               # verbose
 
-# Run a specific test file
-bats tests/detect.bats
+# Python unit tests (pure — no dbus/gi/display needed)
+python3 tests/test_validate.py         # daemon input validators
+python3 tests/test_policy_actions.py   # polkit action-map ⊆ policy + XML well-formed
 
-# Run with verbose output
-bats -t tests/
+# D-Bus service smoke (needs a session bus; uses a mocked HardwareManager)
+dbus-run-session -- bash tests/dbus_smoke.sh
+
+# GUI construction smoke (needs a display; SKIPs cleanly otherwise)
+xvfb-run -a python3 tests/test_gui_construct.py
 ```
+
+All of these run in CI (`.github/workflows/ci.yml`). Tests mock hardware and
+never touch real sysfs or run mutating commands. To preview installer behavior
+without changing the host, use `./install.sh --dry-run` (prints every
+privileged command, prefixed `[DRY RUN] sudo …`).
 
 ## Running Lints
 

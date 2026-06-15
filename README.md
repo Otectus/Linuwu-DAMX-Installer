@@ -35,8 +35,8 @@ Archer uses a root daemon with a D-Bus system service for secure hardware contro
 ```
 Archer GUI (GTK4/Adwaita)  ──  D-Bus (io.otectus.Archer1)  ──  Archer Daemon (root)
        │                              │                              │
-  11 pages                     polkit auth                    sysfs / hwmon
-  system tray               session-cached                  Linuwu-Sense driver
+  10 pages (sidebar)           polkit auth                    sysfs / hwmon
+  hero + status footer      session-cached                  Linuwu-Sense driver
 ```
 
 - **Daemon** (`archer-daemon.service`): Runs as root, communicates with hardware via sysfs/hwmon, exposes a D-Bus interface with polkit-protected methods.
@@ -259,7 +259,7 @@ Archer/
     io.otectus.Archer1.policy     # Polkit action definitions
     archer-daemon.service         # Systemd service unit
     io.github.archer.desktop      # Desktop entry
-    archer/                       # GUI modules (11 pages, client, tray, widgets)
+    archer/                       # GUI modules (10 pages, client, tray, widgets)
     assets/                       # Icons (SVG, PNG)
 ```
 
@@ -269,9 +269,108 @@ Archer/
 - **BIOS Configuration**: Some Acer laptops ship with RAID storage mode enabled. Switch to AHCI mode in BIOS for Linux compatibility. Disable Fast Startup for dual-boot setups.
 - **CachyOS**: The installer automatically detects CachyOS kernels and installs the correct `-cachyos-headers` package. Clang/LLVM compiler flags are applied when a Clang-built kernel is detected.
 - **AUR Helpers**: Modules that install AUR packages (battery, GPU, audio-enhance) prefer `paru` or `yay` if available, with manual fallback otherwise. The installer never installs an AUR helper for you.
-- **D-Bus / Polkit**: The daemon registers as `io.otectus.Archer1` on the system bus. Read-only methods are unprivileged. Mutating methods require polkit authorization, cached per session (`auth_admin_keep`). System-level operations (restart, modprobe) always prompt (`auth_admin`).
+- **D-Bus / Polkit**: The daemon registers as `io.otectus.Archer1` on the system bus. Read-only methods are unprivileged. Mutating methods require polkit authorization, cached per session (`auth_admin_keep`). System-level operations (restart, modprobe) always prompt (`auth_admin`). See **Security Model** below for the full action breakdown.
 - **Install Manifest**: Stored at `/var/lib/archer/install-manifest.json` (root-owned, 0644). Tracks installed modules, files, DKMS modules, and packages for clean uninstallation. Manifests from older user-home locations (`~/.local/share/archer/`, legacy `~/.local/share/damx/`) are migrated automatically on the next install or uninstall run.
 - **Fan Curve Safety**: The fan curve engine includes a watchdog that restores EC automatic control if the daemon crashes or 3 consecutive control ticks fail.
+
+## Security Model
+
+Archer separates a privileged root daemon from an unprivileged GUI. The GUI
+*never* writes hardware directly — every mutation goes through the daemon over
+D-Bus and is authorized by polkit.
+
+**Trust boundary.** Any local user can *call* the D-Bus service (the system-bus
+config is default-deny but allows the `io.otectus.Archer1` interface plus
+standard introspection). Authorization is enforced separately by polkit inside
+the daemon, so reaching the bus is not the same as being allowed to change
+anything.
+
+**Polkit actions** (in `gui/io.otectus.Archer1.policy`), each mapped from a
+daemon method in `archer_dbus.py`'s `POLKIT_ACTIONS`:
+
+| Action | Covers | Active session |
+| --- | --- | --- |
+| `set-profile` | thermal/performance profile | prompt, cached (`auth_admin_keep`) |
+| `set-fan` | fan speed and curves | prompt, cached |
+| `set-battery` | charge limit, calibration | prompt, cached |
+| `set-keyboard` | RGB zones, effects, backlight timeout | prompt, cached |
+| `set-usb` | USB charging level, wake sources | prompt, cached |
+| `set-audio` | noise-suppression toggle | prompt, cached |
+| `set-hardware` | LCD overdrive, boot animation/sound | prompt, cached |
+| `set-display` | GPU display mode (reboot) | prompt, cached |
+| `set-gamemode` | game-mode toggle | prompt, cached |
+| `system-control` | daemon restart, modprobe params | prompt **every time** (`auth_admin`) |
+
+The broad `set-hardware` action was split into per-domain actions
+(`set-battery`/`set-keyboard`/`set-usb`/`set-audio`) for least privilege; a
+test (`tests/test_policy_actions.py`) asserts the daemon's action map and the
+policy file never drift apart.
+
+**Input validation.** The daemon treats all incoming parameters as untrusted.
+`gui/archer_validate.py` validates every mutating method: JSON payloads must be
+objects, numeric values are range-checked (fan 0–100, USB ∈ {0,10,20,30}, RGB
+0–255, etc.), and colors must be hex. Invalid input returns
+`{"success": false}` rather than raising or writing garbage to sysfs.
+
+**Systemd hardening** (`archer-daemon.service`): `ProtectSystem=full`,
+`ProtectHome=read-only`, `PrivateTmp=true`, `ProtectKernelModules`,
+`ProtectControlGroups`, `RestrictAddressFamilies=AF_UNIX AF_NETLINK`,
+`RestrictNamespaces`, `LockPersonality`, `SystemCallArchitectures=native`, and
+a write allowlist of just `/etc/archer`. `ProtectKernelTunables` stays off
+(the daemon writes `/sys`) and `NoNewPrivileges` stays off (polkit needs it).
+
+## GUI: Archer Control Center
+
+The GUI is a GTK4/libadwaita app organized as a sidebar **Control Center**
+(`Adw.NavigationSplitView`, with a `ViewStack` fallback on libadwaita < 1.4):
+
+- **Dashboard hero** — one-glance summary: model, current profile, GPU mode,
+  live CPU/GPU temps, battery + charge-limit, and daemon/driver/reboot badges.
+- **Persistent status footer** — daemon connection, driver presence, a
+  reboot-required indicator, and the running daemon version.
+- **Capability-aware controls** — unsupported features are shown *disabled with
+  an explanation* instead of hidden, so you can see what your hardware lacks.
+- **Confirmation flows** — risky actions (GPU mode switch, battery calibration,
+  full driver+daemon restart) prompt before acting.
+- **Resilient setters** — controls revert and toast on daemon/auth failure;
+  telemetry arrives via the `TelemetryUpdated` signal with a staleness watchdog
+  and exponential-backoff reconnect.
+- **Accessibility** — keyboard-navigable sidebar with tooltips/labels and a
+  visible focus ring.
+
+## Module Conflicts
+
+| Modules | Relationship |
+| --- | --- |
+| `driver` ↔ `thermal` | **Mutually exclusive.** Linuwu-Sense blacklists `acer_wmi`, which native kernel thermal profiles require. The installer's menu and `--modules` path both refuse this combination (by module ID, not list position). |
+| `gui` → `driver` | **Soft dependency.** The GUI works without the driver but with reduced hardware control; the menu hints when `driver` isn't selected. |
+| `power` ↔ power-profiles-daemon | `power` (TLP) prompts to remove a conflicting `power-profiles-daemon` if present. |
+
+## Testing
+
+All checks run in CI (`.github/workflows/ci.yml`) and locally:
+
+```bash
+# Shell: syntax + lint + unit tests
+bash -n install.sh lib/*.sh modules/*.sh
+shellcheck -x -s bash install.sh lib/*.sh modules/*.sh
+bats tests/*.bats
+
+# Python: lint, compile, pure-unit (no dbus/gi needed)
+flake8 gui/ --max-line-length=120 --ignore=E501,W503,E402
+python3 tests/test_validate.py          # daemon input validators
+python3 tests/test_policy_actions.py    # polkit action-map ⊆ policy + XML
+
+# D-Bus service introspection + telemetry (needs a session bus)
+dbus-run-session -- bash tests/dbus_smoke.sh
+
+# GUI: construct every page + window headlessly (needs a display)
+xvfb-run -a python3 tests/test_gui_construct.py
+```
+
+**Dry run / no host changes.** `./install.sh --dry-run` prints every privileged
+command (prefixed `[DRY RUN] sudo …`) without executing it. The bats/python
+tests mock hardware and never touch real sysfs or run mutating commands.
 
 ## Troubleshooting
 

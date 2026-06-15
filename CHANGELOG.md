@@ -5,6 +5,70 @@ All notable changes to Archer Compatibility Suite are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.0] — 2026-06-15
+
+Full engineering pass: correctness, security hardening, and a GUI
+modernization. GUI package version bumped in lockstep: `1.0.1` → `1.1.0`.
+The D-Bus method/signal contract is unchanged, so daemon and GUI stay
+compatible.
+
+### Fixed
+
+- **Installer no longer relies on array positions.** Module conflict and
+  dependency logic (`driver` ↔ `thermal`, `gui` → `driver`) is keyed by module
+  ID via new `module_index`/`is_module_selected`/`set_module_selected` helpers,
+  so reordering `MODULE_IDS` can't silently break it.
+- **Honest install summary.** The installer tracks failed modules, reports
+  `N of M installed`, folds in verification pass/total, and exits non-zero on
+  real failures instead of always printing "all installed".
+- **GPU module no longer leaks a broken `mkinitcpio` shim.** The no-op shim is
+  now trap-protected and always restored even if `envycontrol` fails.
+- **Safer GRUB edits.** `mktemp` failures are caught and temp files cleaned up
+  in `add/remove_grub_params`.
+- **Broader Clang-kernel detection** via `CONFIG_CC_IS_CLANG` (`/proc/config.gz`,
+  `/boot/config-*`) in addition to `/proc/version`.
+- **Pango markup bugs** in two row titles ("Boot Animation & Sound", "Restart
+  Drivers & Daemon") — unescaped `&` now rendered correctly.
+- **Display "reboot required" banner is sticky** — it no longer clears on the
+  next settings refresh before you actually reboot.
+- **Working tree normalized to LF** (had been bulk-converted to CRLF, which
+  broke `bash -n` and CI).
+
+### Security
+
+- **Polkit least privilege.** The broad `set-hardware` action is split into
+  per-domain `set-battery` / `set-keyboard` / `set-usb` / `set-audio` actions
+  (LCD/boot toggles remain under `set-hardware`). A new test asserts the
+  daemon's `POLKIT_ACTIONS` map and the policy file never drift apart.
+- **Default-deny D-Bus config.** `io.otectus.Archer1.conf` now allows only the
+  Archer interface plus standard introspection/properties/peer, instead of any
+  method.
+- **Daemon input validation.** New `gui/archer_validate.py` validates every
+  mutating method: JSON payloads must be objects (no more uncaught
+  `json.loads`/`KeyError`), numerics are range-checked, colors must be hex.
+- **Stronger systemd sandbox** for `archer-daemon.service`
+  (`ProtectKernelModules`, `ProtectControlGroups`, `RestrictAddressFamilies`,
+  `RestrictNamespaces`, `LockPersonality`, `SystemCallArchitectures=native`, …),
+  keeping `/sys` writes and polkit working.
+
+### Added
+
+- **Sidebar Control Center GUI.** `Adw.NavigationSplitView` with a sidebar,
+  per-page header, dashboard **hero** (model, profile, GPU mode, live temps,
+  battery + limit, status badges), and a persistent **status footer**.
+  Version-gated with the classic `ViewStack` layout as a fallback.
+- **Capability-aware controls** — unsupported features are disabled with an
+  explanation instead of hidden.
+- **Confirmation dialogs** for risky actions (GPU mode switch, battery
+  calibration, full driver+daemon restart).
+- **Consistent setter behavior** — all pages use the `async_set`
+  revert-on-failure + toast helper; new shared widgets under
+  `gui/archer/widgets/` (`hero`, `status_footer`, `status`, `capability_row`,
+  `confirm`).
+- **Tests + CI**: `tests/test_validate.py`, `tests/test_policy_actions.py`,
+  `tests/test_gui_construct.py`, plus `python-unit` and `gui-construct-smoke`
+  (Xvfb) CI jobs; negative-validation cases added to the D-Bus smoke test.
+
 ## [2.0.1] — 2026-05-01
 
 Hardening sweep triggered by [#4](https://github.com/otectus/Archer/issues/4)
