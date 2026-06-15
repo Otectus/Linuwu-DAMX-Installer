@@ -9,6 +9,7 @@ exits 0 on success and non-zero on any failure. Designed to run under
 real hardware.
 """
 
+import json
 import sys
 import threading
 import xml.etree.ElementTree as ET
@@ -143,6 +144,26 @@ def main():
         if not seen.wait(timeout=5.0):
             _fail("TelemetryUpdated signal never fired within 5s")
         print("OK: TelemetryUpdated fired")
+
+        # --- Negative parameter validation ---
+        # polkit isn't on the CI session bus, so stub authorization to True and
+        # call the method bodies directly. Validation runs before any hardware
+        # access, so these bad inputs must return success:false (not raise).
+        archer_dbus._check_polkit = lambda *a, **k: True
+        bad_cases = [
+            ("SetUsbCharging(999)", svc.SetUsbCharging(999, sender="smoke")),
+            ("SetFanSpeed(200,0)", svc.SetFanSpeed(200, 0, sender="smoke")),
+            ("SetPerZoneMode(bad json)", svc.SetPerZoneMode("not json", sender="smoke")),
+            ("SetFourZoneMode(bad rgb)",
+             svc.SetFourZoneMode('{"red": 999}', sender="smoke")),
+            ("SetAudioEnhancement(non-object)",
+             svc.SetAudioEnhancement("[1,2,3]", sender="smoke")),
+        ]
+        for label, raw in bad_cases:
+            resp = json.loads(str(raw))
+            if resp.get("success") is not False:
+                _fail(f"{label} should have failed validation, got: {resp!r}")
+        print(f"OK: {len(bad_cases)} invalid inputs rejected with success:false")
 
         print("PASS: D-Bus smoke complete")
     finally:

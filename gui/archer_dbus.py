@@ -11,6 +11,8 @@ import dbus
 import dbus.service
 from gi.repository import GLib
 
+import archer_validate as validate
+
 logger = logging.getLogger("archer-daemon")
 
 # How often the daemon pushes a TelemetryUpdated signal. The GUI considers
@@ -163,6 +165,10 @@ class ArcherDBusService(dbus.service.Object):
     def SetFanSpeed(self, cpu, gpu, sender=None):
         if not self._authorize("set_fan_speed", sender):
             return self._json_response({"success": False, "error": "Authorization denied"})
+        speeds, err = validate.validate_fan_speed(cpu, gpu)
+        if err:
+            return self._json_response({"success": False, "error": err})
+        cpu, gpu = speeds
         ok = self.hw.set_fan_speed(cpu, gpu)
         if ok:
             self.hw.settings.set("fan_speed", {"cpu": cpu, "gpu": gpu})
@@ -173,11 +179,17 @@ class ArcherDBusService(dbus.service.Object):
     def SetFanCurve(self, params_json, sender=None):
         if not self._authorize("set_fan_curve", sender):
             return self._json_response({"success": False, "error": "Authorization denied"})
-        params = json.loads(params_json)
-        target = params.get("target", "cpu")
-        points = params.get("points", [])
-        enabled = params.get("enabled", True)
+        params, err = validate.parse_json_object(params_json)
+        if err:
+            return self._json_response({"success": False, "error": err})
+        target, err = validate.validate_choice(params.get("target", "cpu"), ("cpu", "gpu"), "fan curve target")
+        if err:
+            return self._json_response({"success": False, "error": err})
+        enabled = bool(params.get("enabled", True))
         if enabled:
+            points, err = validate.validate_fan_curve_points(params.get("points", []))
+            if err:
+                return self._json_response({"success": False, "error": err})
             self.hw.start_fan_curve(target, points)
             self.hw.settings.set(f"fan_curve_{target}", {"enabled": True, "points": points})
         else:
@@ -209,6 +221,9 @@ class ArcherDBusService(dbus.service.Object):
     def SetUsbCharging(self, level, sender=None):
         if not self._authorize("set_usb_charging", sender):
             return self._json_response({"success": False, "error": "Authorization denied"})
+        level, err = validate.validate_choice(int(level), validate.USB_CHARGING_LEVELS, "USB charging level")
+        if err:
+            return self._json_response({"success": False, "error": err})
         ok = self.hw.set_usb_charging(level)
         if ok:
             self.hw.settings.set("usb_charging", level)
@@ -249,8 +264,14 @@ class ArcherDBusService(dbus.service.Object):
     def SetPerZoneMode(self, params_json, sender=None):
         if not self._authorize("set_per_zone_mode", sender):
             return self._json_response({"success": False, "error": "Authorization denied"})
-        p = json.loads(params_json)
-        ok = self.hw.set_per_zone_mode(p["zone1"], p["zone2"], p["zone3"], p["zone4"], p["brightness"])
+        p, err = validate.parse_json_object(params_json)
+        if err:
+            return self._json_response({"success": False, "error": err})
+        values, err = validate.validate_per_zone(p)
+        if err:
+            return self._json_response({"success": False, "error": err})
+        z1, z2, z3, z4, brightness = values
+        ok = self.hw.set_per_zone_mode(z1, z2, z3, z4, brightness)
         if ok:
             self.hw.settings.set("per_zone_mode", p)
             self.hw.settings.set("last_keyboard_mode", "per_zone")
@@ -261,9 +282,14 @@ class ArcherDBusService(dbus.service.Object):
     def SetFourZoneMode(self, params_json, sender=None):
         if not self._authorize("set_four_zone_mode", sender):
             return self._json_response({"success": False, "error": "Authorization denied"})
-        p = json.loads(params_json)
-        ok = self.hw.set_four_zone_mode(p["mode"], p["speed"], p["brightness"],
-                                        p["direction"], p["red"], p["green"], p["blue"])
+        p, err = validate.parse_json_object(params_json)
+        if err:
+            return self._json_response({"success": False, "error": err})
+        values, err = validate.validate_four_zone(p)
+        if err:
+            return self._json_response({"success": False, "error": err})
+        mode, speed, brightness, direction, red, green, blue = values
+        ok = self.hw.set_four_zone_mode(mode, speed, brightness, direction, red, green, blue)
         if ok:
             self.hw.settings.set("four_zone_mode", p)
             self.hw.settings.set("last_keyboard_mode", "effect")
@@ -301,8 +327,10 @@ class ArcherDBusService(dbus.service.Object):
     def SetAudioEnhancement(self, params_json, sender=None):
         if not self._authorize("set_audio_enhancement", sender):
             return self._json_response({"success": False, "error": "Authorization denied"})
-        params = json.loads(params_json)
-        noise = params.get("noise_suppression", False)
+        params, err = validate.parse_json_object(params_json)
+        if err:
+            return self._json_response({"success": False, "error": err})
+        noise = bool(params.get("noise_suppression", False))
         conf = "/etc/pipewire/filter-chain.conf.d/archer-noise-suppress.conf"
         conf_disabled = conf + ".disabled"
         try:
