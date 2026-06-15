@@ -55,3 +55,30 @@ setup() {
 @test "MODULE_IDS and MODULE_LABELS have same length" {
     [ "${#MODULE_IDS[@]}" -eq "${#MODULE_LABELS[@]}" ]
 }
+
+@test "is_known_module accepts every canonical module ID" {
+    local id
+    for id in "${MODULE_IDS[@]}"; do
+        is_known_module "$id" || { echo "rejected canonical id: $id"; return 1; }
+    done
+}
+
+@test "is_known_module rejects path-traversal attempts" {
+    ! is_known_module "../../tmp/evil"
+    ! is_known_module "../etc/x"
+    ! is_known_module "/etc/passwd"
+    ! is_known_module ".hidden"
+    ! is_known_module ""
+}
+
+@test "is_known_module rejects shell metacharacters" {
+    ! is_known_module "driver;rm -rf /"
+    ! is_known_module 'driver$(whoami)'
+    ! is_known_module "driver|cat"
+    ! is_known_module "driver\`id\`"
+}
+
+@test "is_known_module rejects unknown but well-formed IDs" {
+    ! is_known_module "unknown"
+    ! is_known_module "fakemod"
+}

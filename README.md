@@ -270,8 +270,44 @@ Archer/
 - **CachyOS**: The installer automatically detects CachyOS kernels and installs the correct `-cachyos-headers` package. Clang/LLVM compiler flags are applied when a Clang-built kernel is detected.
 - **AUR Helpers**: Modules that install AUR packages (battery, GPU, audio-enhance) prefer `paru` or `yay` if available, with manual fallback otherwise. The installer never installs an AUR helper for you.
 - **D-Bus / Polkit**: The daemon registers as `io.otectus.Archer1` on the system bus. Read-only methods are unprivileged. Mutating methods require polkit authorization, cached per session (`auth_admin_keep`). System-level operations (restart, modprobe) always prompt (`auth_admin`).
-- **Install Manifest**: Stored at `~/.local/share/archer/install-manifest.json`. Tracks installed modules, files, DKMS modules, and packages for clean uninstallation. Legacy manifests from previous versions are migrated automatically.
+- **Install Manifest**: Stored at `/var/lib/archer/install-manifest.json` (root-owned, 0644). Tracks installed modules, files, DKMS modules, and packages for clean uninstallation. Manifests from older user-home locations (`~/.local/share/archer/`, legacy `~/.local/share/damx/`) are migrated automatically on the next install or uninstall run.
 - **Fan Curve Safety**: The fan curve engine includes a watchdog that restores EC automatic control if the daemon crashes or 3 consecutive control ticks fail.
+
+## Troubleshooting
+
+### GUI shows "Daemon Offline" or "Stale"
+
+1. Confirm the daemon is running:
+   ```bash
+   systemctl status archer-daemon
+   ```
+   If it's not active, start it: `sudo systemctl restart archer-daemon`.
+
+2. Confirm the D-Bus name is claimable:
+   ```bash
+   busctl list | grep io.otectus.Archer1
+   busctl introspect io.otectus.Archer1 /io/otectus/Archer1
+   ```
+   If the name isn't visible, the policy file may not be loaded. The installer reloads `dbus.service` automatically, but you can do it manually:
+   ```bash
+   sudo systemctl reload dbus.service
+   sudo systemctl restart archer-daemon
+   ```
+
+3. Tail the daemon log for the actual failure:
+   ```bash
+   sudo journalctl -u archer-daemon -n 100 --no-pager
+   ```
+
+If the GUI shows the status flipping between "Connected" and "Stale", the daemon is up but not emitting telemetry on schedule — check `journalctl` for `TelemetryUpdated emit failed` messages (often a transient sysfs/nvidia-smi hang).
+
+### GUI hangs forever / never opens
+
+Almost always means D-Bus is unreachable. Same triage as above. The GUI now applies a 5s timeout to every D-Bus call and shows the failure in a toast, so a daemon hang manifests as a quick "Daemon Offline" notification rather than a frozen window.
+
+## Changelog
+
+Release notes and migration guidance: [CHANGELOG.md](CHANGELOG.md).
 
 ## Contributing
 

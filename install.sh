@@ -10,26 +10,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # --- Source libraries ---
 source "$SCRIPT_DIR/lib/utils.sh"
+source "$SCRIPT_DIR/lib/modules.sh"
 source "$SCRIPT_DIR/lib/detect.sh"
 source "$SCRIPT_DIR/lib/manifest.sh"
 
-# --- Module registry ---
-MODULE_IDS=("driver" "battery" "gpu" "touchpad" "audio" "wifi" "power" "thermal" "gui" "gamemode" "audio-enhance" "camera-enhance" "firmware")
-MODULE_LABELS=(
-    "Linuwu-Sense Kernel Driver"
-    "Battery Charge Limit (80%)"
-    "GPU Switching (EnvyControl)"
-    "Touchpad Fix (I2C HID)"
-    "Audio Fix (SOF/ALSA)"
-    "WiFi/Bluetooth Troubleshooting"
-    "Power Management (TLP)"
-    "Kernel Thermal Profiles"
-    "Archer GUI (Control Panel)"
-    "Game Mode Support"
-    "Audio Enhancement (Noise Suppression)"
-    "Camera Enhancement (Virtual Camera)"
-    "Firmware Update Advisor"
-)
+# --- Module registry (defined in lib/modules.sh) ---
 MODULE_SELECTED=()
 INSTALLED_FILES=""
 INSTALLED_DKMS=""
@@ -232,17 +217,16 @@ install_shared_deps() {
 }
 
 run_selected_modules() {
-    local selected_names=()
+    local installed_names=()
 
     for i in "${!MODULE_IDS[@]}"; do
         if [[ "${MODULE_SELECTED[$i]}" -eq 1 ]]; then
             local id="${MODULE_IDS[$i]}"
             local label="${MODULE_LABELS[$i]}"
-            selected_names+=("$id")
 
-            # GUI dependency warning
+            # GUI dependency warning (driver-or-already-installed check)
             if [[ "$id" = "gui" ]]; then
-                if ! is_in_list "driver" "${selected_names[*]}" && \
+                if ! is_in_list "driver" "${installed_names[*]}" && \
                    ! dkms status 2>/dev/null | grep -q "linuwu-sense"; then
                     warn "Linuwu-Sense driver not installed. The daemon will have limited functionality."
                     warn "Consider installing the 'driver' module for full hardware control."
@@ -250,16 +234,30 @@ run_selected_modules() {
             fi
 
             section "Installing: $label"
+            # Snapshot manifest accumulators so a failed module's partial writes
+            # don't leak into the saved manifest.
+            local _files_pre="$INSTALLED_FILES"
+            local _dkms_pre="$INSTALLED_DKMS"
+            local _pkgs_pre="$INSTALLED_PACKAGES"
+
             source "$SCRIPT_DIR/modules/${id}.sh"
             if ! module_install; then
-                warn "Module $id failed to install. Continuing..."
+                warn "Module $id failed to install. Rolling back manifest entries; continuing with remaining modules."
+                INSTALLED_FILES="$_files_pre"
+                INSTALLED_DKMS="$_dkms_pre"
+                INSTALLED_PACKAGES="$_pkgs_pre"
                 continue
             fi
+            installed_names+=("$id")
         fi
     done
 
-    # Write manifest
-    local modules_joined="${selected_names[*]}"
+    # Write manifest with only modules that actually installed cleanly.
+    local modules_joined="${installed_names[*]}"
+    if [[ -z "$modules_joined" ]]; then
+        warn "No modules installed successfully — skipping manifest write."
+        return
+    fi
     write_manifest "$modules_joined" "$INSTALLED_FILES" "$INSTALLED_DKMS" "$INSTALLED_PACKAGES"
 }
 
@@ -303,6 +301,9 @@ main() {
         exit 0
     fi
 
+    # Move any legacy manifest into the new system path before any read.
+    migrate_legacy_manifest
+
     # Standalone verify mode: check installed modules from manifest
     if [[ "$VERIFY_ONLY" -eq 1 ]]; then
         if ! has_manifest; then
@@ -314,6 +315,10 @@ main() {
         local total=0
         local passed=0
         for id in $mods; do
+            if ! is_known_module "$id"; then
+                warn "Manifest references unknown module '$id' — skipping (refusing to source untrusted name)."
+                continue
+            fi
             local mod_file="$SCRIPT_DIR/modules/${id}.sh"
             if [[ -f "$mod_file" ]]; then
                 total=$((total + 1))
@@ -366,16 +371,14 @@ main() {
         done
         IFS=',' read -ra explicit_list <<< "$EXPLICIT_MODULES"
         for mod in "${explicit_list[@]}"; do
-            local found=0
+            if ! is_known_module "$mod"; then
+                error "Unknown or invalid module: '$mod' (available: ${MODULE_IDS[*]})"
+            fi
             for i in "${!MODULE_IDS[@]}"; do
                 if [[ "${MODULE_IDS[$i]}" = "$mod" ]]; then
                     MODULE_SELECTED[i]=1
-                    found=1
                 fi
             done
-            if [[ "$found" -eq 0 ]]; then
-                warn "Unknown module: '$mod' (available: ${MODULE_IDS[*]})"
-            fi
         done
         if ! check_conflicts; then
             error "Module conflict detected. Aborting."

@@ -56,3 +56,39 @@ jobs:
         run: pip install flake8
       - name: Lint Python files
         run: flake8 gui/ --max-line-length=120 --ignore=E501,W503,E402
+
+  python-syntax:
+    name: Python Syntax Check (GUI)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Compile every GUI module
+        run: |
+          set -e
+          for f in $(find gui -name '*.py'); do
+            echo "py_compile $f"
+            python -m py_compile "$f"
+          done
+
+  dbus-introspect-smoke:
+    name: D-Bus Introspect Smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install D-Bus runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y dbus dbus-x11 python3-dbus python3-gi systemd
+      - name: Boot a session bus, register the service, introspect
+        run: |
+          # The service runs against a private session bus so CI does not
+          # need root or a real system bus. We only assert that the
+          # service registers, exposes Ping, GetMonitoringData, and the
+          # TelemetryUpdated/AudioEnhancementChanged signals.
+          dbus-run-session -- bash tests/dbus_smoke.sh

@@ -9,8 +9,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Source utilities
 source "$SCRIPT_DIR/lib/utils.sh"
+source "$SCRIPT_DIR/lib/modules.sh"
 source "$SCRIPT_DIR/lib/detect.sh"
 source "$SCRIPT_DIR/lib/manifest.sh"
+
+# Move any legacy manifest into the new system path before any read.
+migrate_legacy_manifest
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -48,6 +52,14 @@ if has_manifest; then
     echo ""
 
     for mod in $INSTALLED_MODS; do
+        # Allowlist gate: reject path-traversal or arbitrary names from a
+        # tampered manifest before sourcing. is_known_module enforces both
+        # the safe-name regex and the canonical MODULE_IDS list.
+        if ! is_known_module "$mod"; then
+            warn "Refusing to source unknown module name '$mod' from manifest (skipping)."
+            echo ""
+            continue
+        fi
         local_mod_file="$SCRIPT_DIR/modules/${mod}.sh"
         if [[ -f "$local_mod_file" ]]; then
             log "Uninstalling: $mod"
@@ -61,7 +73,7 @@ if has_manifest; then
     done
 
     # Remove manifest
-    run rm -f "$MANIFEST_FILE"
+    remove_manifest
     log "Install manifest removed."
 
 else
@@ -104,9 +116,13 @@ else
     run_sudo rm -rf "/usr/src/acer-wmi-battery-0.1.0"
 
     # 5. Clean application files
-    log "Removing application data..."
-    run rm -rf "$HOME/.local/share/damx"
-    run rm -rf "$HOME/.local/share/archer"
+    if [[ -n "${HOME:-}" && "$HOME" != "/" ]]; then
+        log "Removing application data..."
+        run rm -rf "$HOME/.local/share/damx"
+        run rm -rf "$HOME/.local/share/archer"
+    else
+        warn "HOME is unset or '/'; refusing to rm -rf legacy application data."
+    fi
 
     # 6. Remove Archer GUI if installed
     if [[ -d /opt/archer ]]; then

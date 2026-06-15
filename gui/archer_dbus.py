@@ -4,11 +4,18 @@ Archer D-Bus Service — exposes HardwareManager over system D-Bus with polkit a
 
 import json
 import logging
+import os
+import threading
 
 import dbus
 import dbus.service
+from gi.repository import GLib
 
 logger = logging.getLogger("archer-daemon")
+
+# How often the daemon pushes a TelemetryUpdated signal. The GUI considers
+# data "stale" if it has not seen a signal within ~3x this interval.
+TELEMETRY_INTERVAL_S = 2
 
 DBUS_NAME = "io.otectus.Archer1"
 DBUS_PATH = "/io/otectus/Archer1"
@@ -63,6 +70,18 @@ class ArcherDBusService(dbus.service.Object):
         self._bus_name = dbus.service.BusName(DBUS_NAME, self._bus)
         super().__init__(self._bus, DBUS_PATH)
         logger.info(f"D-Bus service registered: {DBUS_NAME} at {DBUS_PATH}")
+        # Push telemetry on a timer so the GUI doesn't have to poll. Returns
+        # True so GLib keeps re-arming the timeout.
+        GLib.timeout_add_seconds(TELEMETRY_INTERVAL_S, self._emit_telemetry)
+
+    def _emit_telemetry(self):
+        try:
+            payload = json.dumps(self.hw.get_monitoring_data())
+            self.TelemetryUpdated(payload)
+        except Exception as e:
+            # Don't let a transient sysfs hiccup kill the timer.
+            logger.warning(f"TelemetryUpdated emit failed: {e}")
+        return True
 
     def _authorize(self, command, sender):
         """Check polkit for mutating commands. Returns True if authorized."""
@@ -80,7 +99,7 @@ class ArcherDBusService(dbus.service.Object):
     @dbus.service.method(DBUS_IFACE, in_signature="", out_signature="s",
                          sender_keyword="sender")
     def Ping(self, sender=None):
-        return self._json_response({"success": True, "data": {"version": self.hw.settings.get("daemon_version", "2.0.0")}})
+        return self._json_response({"success": True, "data": {"version": self.hw.settings.get("daemon_version", "2.0.1")}})
 
     @dbus.service.method(DBUS_IFACE, in_signature="", out_signature="s",
                          sender_keyword="sender")
@@ -282,7 +301,6 @@ class ArcherDBusService(dbus.service.Object):
     def SetAudioEnhancement(self, params_json, sender=None):
         if not self._authorize("set_audio_enhancement", sender):
             return self._json_response({"success": False, "error": "Authorization denied"})
-        import os
         params = json.loads(params_json)
         noise = params.get("noise_suppression", False)
         conf = "/etc/pipewire/filter-chain.conf.d/archer-noise-suppress.conf"
@@ -295,6 +313,11 @@ class ArcherDBusService(dbus.service.Object):
                 if os.path.exists(conf):
                     os.rename(conf, conf_disabled)
             self.hw.settings.set("audio_enhancement", {"noise_suppression": noise})
+            # Tell the GUI to restart pipewire in the calling user's
+            # session. The daemon runs as root, so `systemctl --user
+            # restart pipewire` here would target root's user manager
+            # and never touch the actual user's pipewire instance.
+            self.AudioEnhancementChanged(noise)
             return self._json_response({"success": True, "data": {"noise_suppression": noise}})
         except OSError as e:
             return self._json_response({"success": False, "error": str(e)})
@@ -322,7 +345,6 @@ class ArcherDBusService(dbus.service.Object):
     def RestartDaemon(self, sender=None):
         if not self._authorize("restart_daemon", sender):
             return self._json_response({"success": False, "error": "Authorization denied"})
-        import threading
         threading.Thread(target=self.hw.restart_daemon, daemon=True).start()
         return self._json_response({"success": True})
 
@@ -331,7 +353,6 @@ class ArcherDBusService(dbus.service.Object):
     def RestartDriversAndDaemon(self, sender=None):
         if not self._authorize("restart_drivers_and_daemon", sender):
             return self._json_response({"success": False, "error": "Authorization denied"})
-        import threading
         threading.Thread(target=self.hw.restart_drivers_and_daemon, daemon=True).start()
         return self._json_response({"success": True})
 
@@ -343,4 +364,8 @@ class ArcherDBusService(dbus.service.Object):
 
     @dbus.service.signal(DBUS_IFACE, signature="s")
     def ProfileChanged(self, profile):
+        pass
+
+    @dbus.service.signal(DBUS_IFACE, signature="b")
+    def AudioEnhancementChanged(self, enabled):
         pass

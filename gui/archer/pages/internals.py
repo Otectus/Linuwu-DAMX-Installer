@@ -134,7 +134,7 @@ class InternalsPage(Gtk.Box):
         self.conn_group = Adw.PreferencesGroup(title="Connection")
 
         self.conn_status_row = Adw.ActionRow(
-            title="Daemon Socket", subtitle="/var/run/archer.sock"
+            title="Daemon D-Bus", subtitle="io.otectus.Archer1 (system bus)"
         )
         self.conn_group.add(self.conn_status_row)
 

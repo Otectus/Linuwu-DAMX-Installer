@@ -7,8 +7,9 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Gtk, Adw
 
-import threading
 import subprocess
+
+from archer.widgets.async_set import async_set
 
 
 class SystemPage(Gtk.Box):
@@ -83,7 +84,7 @@ class SystemPage(Gtk.Box):
         # --- Version Information ---
         version_group = Adw.PreferencesGroup(title="Version")
 
-        self.info_gui_version = Adw.ActionRow(title="GUI Version", subtitle="1.0.0")
+        self.info_gui_version = Adw.ActionRow(title="GUI Version", subtitle="1.0.1")
         version_group.add(self.info_gui_version)
 
         self.info_daemon_version = Adw.ActionRow(title="Daemon Version", subtitle="--")
@@ -172,17 +173,32 @@ class SystemPage(Gtk.Box):
 
     def _on_lcd_toggled(self, switch, *args):
         enabled = switch.get_active()
-        threading.Thread(
-            target=lambda: self.client.set_lcd_override(enabled),
-            daemon=True,
-        ).start()
+
+        def revert(err):
+            switch.handler_block_by_func(self._on_lcd_toggled)
+            switch.set_active(not enabled)
+            switch.handler_unblock_by_func(self._on_lcd_toggled)
+            self._toast(f"LCD override toggle failed: {err}")
+
+        async_set(self.client.set_lcd_override, args=(enabled,),
+                  on_failure=revert)
 
     def _on_boot_toggled(self, switch, *args):
         enabled = switch.get_active()
-        threading.Thread(
-            target=lambda: self.client.set_boot_animation_sound(enabled),
-            daemon=True,
-        ).start()
+
+        def revert(err):
+            switch.handler_block_by_func(self._on_boot_toggled)
+            switch.set_active(not enabled)
+            switch.handler_unblock_by_func(self._on_boot_toggled)
+            self._toast(f"Boot animation toggle failed: {err}")
+
+        async_set(self.client.set_boot_animation_sound, args=(enabled,),
+                  on_failure=revert)
+
+    def _toast(self, message):
+        win = self.get_root()
+        if win is not None and hasattr(win, "add_toast"):
+            win.add_toast(Adw.Toast.new(message))
 
     def _on_check_updates(self, row):
         try:

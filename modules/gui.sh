@@ -23,6 +23,25 @@ module_check_installed() {
 }
 
 module_install() {
+    # Verify all source files exist before any sudo write so a partial install
+    # doesn't leave the system in a broken state.
+    local _required=(
+        "$SCRIPT_DIR/gui/archer_daemon.py"
+        "$SCRIPT_DIR/gui/archer_dbus.py"
+        "$SCRIPT_DIR/gui/archer_gui.py"
+        "$SCRIPT_DIR/gui/io.otectus.Archer1.conf"
+        "$SCRIPT_DIR/gui/io.otectus.Archer1.policy"
+        "$SCRIPT_DIR/gui/archer-daemon.service"
+        "$SCRIPT_DIR/gui/io.github.archer.desktop"
+        "$SCRIPT_DIR/gui/assets/archer.svg"
+    )
+    local _src
+    for _src in "${_required[@]}"; do
+        [[ -f "$_src" ]] || error "Required GUI source file missing: $_src"
+    done
+    [[ -d "$SCRIPT_DIR/gui/archer" ]] || error "Required GUI package directory missing: $SCRIPT_DIR/gui/archer"
+    [[ -d "$SCRIPT_DIR/gui/assets" ]] || error "Required GUI assets directory missing: $SCRIPT_DIR/gui/assets"
+
     # Install dependencies
     log "Installing GUI dependencies..."
     run_sudo pacman -S --needed --noconfirm python-gobject gtk4 libadwaita python python-pillow python-dbus
@@ -44,6 +63,21 @@ module_install() {
     run_sudo cp "$SCRIPT_DIR/gui/io.otectus.Archer1.conf" /etc/dbus-1/system.d/
     run_sudo cp "$SCRIPT_DIR/gui/io.otectus.Archer1.policy" /usr/share/polkit-1/actions/
 
+    # Reload dbus-daemon so the new policy file takes effect immediately.
+    # Without this, the daemon can't claim io.otectus.Archer1 until reboot
+    # (which is the symptom reported in issue #4).
+    log "Reloading dbus-daemon to pick up new policy..."
+    if ! run_sudo systemctl reload dbus.service 2>/dev/null; then
+        # Fallback for systems where dbus.service has no reload action.
+        local dbus_pid
+        dbus_pid="$(pidof dbus-daemon 2>/dev/null | awk '{print $1}')"
+        if [[ -n "$dbus_pid" ]]; then
+            run_sudo kill -HUP "$dbus_pid" || warn "Could not signal dbus-daemon (PID $dbus_pid)."
+        else
+            warn "dbus-daemon not found; the new policy may require a reboot to take effect."
+        fi
+    fi
+
     # Set permissions
     run_sudo chmod 755 "$_GUI_INSTALL_DIR/archer_daemon.py"
     run_sudo chmod 755 "$_GUI_INSTALL_DIR/archer_gui.py"
@@ -58,6 +92,17 @@ module_install() {
     if ! run_sudo systemctl start archer-daemon.service 2>/dev/null; then
         warn "Daemon did not start — Linuwu-Sense driver may not be loaded yet."
         warn "It will start automatically after reboot if the driver module is installed."
+    fi
+
+    # Verify the bus name is claimable. Best-effort: skip during dry-run and
+    # if busctl is unavailable. A failure here is a warning, not a hard error,
+    # because the daemon may legitimately not be running yet (e.g. driver
+    # module not loaded). The reboot-as-workaround footgun is gone either way.
+    if [[ "${DRY_RUN:-0}" -ne 1 ]] && has_cmd busctl; then
+        if ! busctl --no-pager list 2>/dev/null | grep -q "io.otectus.Archer1"; then
+            warn "io.otectus.Archer1 not yet visible on the system bus."
+            warn "Check 'systemctl status archer-daemon' once the driver module is loaded."
+        fi
     fi
 
     # Install desktop entry
@@ -108,8 +153,18 @@ module_uninstall() {
     run_sudo rm -f /etc/dbus-1/system.d/io.otectus.Archer1.conf
     run_sudo rm -f /usr/share/polkit-1/actions/io.otectus.Archer1.policy
 
-    # Clean up socket/PID if lingering
+    # Reload dbus-daemon so the removed policy stops being active immediately.
+    if ! run_sudo systemctl reload dbus.service 2>/dev/null; then
+        local dbus_pid
+        dbus_pid="$(pidof dbus-daemon 2>/dev/null | awk '{print $1}')"
+        if [[ -n "$dbus_pid" ]]; then
+            run_sudo kill -HUP "$dbus_pid" || true
+        fi
+    fi
+
+    # Clean up legacy socket/PID locations if lingering (pre-RuntimeDirectory).
     run_sudo rm -f /var/run/archer.sock 2>/dev/null || true
+    run_sudo rm -f /var/run/archer-daemon.pid 2>/dev/null || true
 
     log "Archer GUI removed. Packages retained (remove manually with: sudo pacman -Rns python-gobject gtk4 libadwaita python-pillow)"
 }

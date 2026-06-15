@@ -7,7 +7,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Gtk, Adw
 
-import threading
+from archer.widgets.async_set import async_set
 
 
 class BatteryPage(Gtk.Box):
@@ -16,6 +16,12 @@ class BatteryPage(Gtk.Box):
         self.client = client
         self._calibrating = False
         self._build_ui()
+
+    def _toast(self, message):
+        """Show a toast on the parent ArcherWindow if attached."""
+        win = self.get_root()
+        if win is not None and hasattr(win, "add_toast"):
+            win.add_toast(Adw.Toast.new(message))
 
     def _build_ui(self):
         scrolled = Gtk.ScrolledWindow(vexpand=True, hscrollbar_policy=Gtk.PolicyType.NEVER)
@@ -196,30 +202,50 @@ class BatteryPage(Gtk.Box):
 
     def _on_limit_toggled(self, switch, *args):
         enabled = switch.get_active()
-        threading.Thread(
-            target=lambda: self.client.set_battery_limiter(enabled),
-            daemon=True,
-        ).start()
+
+        def revert(err):
+            switch.handler_block_by_func(self._on_limit_toggled)
+            switch.set_active(not enabled)
+            switch.handler_unblock_by_func(self._on_limit_toggled)
+            self._toast(f"Battery limit toggle failed: {err}")
+
+        async_set(self.client.set_battery_limiter, args=(enabled,),
+                  on_failure=revert)
 
     def _on_start_calibration(self, button):
         self._set_calibrating(True)
-        threading.Thread(
-            target=lambda: self.client.set_battery_calibration(True),
-            daemon=True,
-        ).start()
+
+        def revert(err):
+            self._set_calibrating(False)
+            self._toast(f"Could not start calibration: {err}")
+
+        async_set(self.client.set_battery_calibration, args=(True,),
+                  on_failure=revert)
 
     def _on_stop_calibration(self, button):
         self._set_calibrating(False)
-        threading.Thread(
-            target=lambda: self.client.set_battery_calibration(False),
-            daemon=True,
-        ).start()
+
+        def revert(err):
+            self._set_calibrating(True)
+            self._toast(f"Could not stop calibration: {err}")
+
+        async_set(self.client.set_battery_calibration, args=(False,),
+                  on_failure=revert)
 
     def _on_usb_changed(self, combo, *args):
         idx = combo.get_selected()
         levels = [0, 10, 20, 30]
         level = levels[idx] if idx < len(levels) else 0
-        threading.Thread(
-            target=lambda: self.client.set_usb_charging(level),
-            daemon=True,
-        ).start()
+        prev_idx = self._last_usb_idx if hasattr(self, "_last_usb_idx") else idx
+
+        def remember(_data):
+            self._last_usb_idx = idx
+
+        def revert(err):
+            combo.handler_block_by_func(self._on_usb_changed)
+            combo.set_selected(prev_idx)
+            combo.handler_unblock_by_func(self._on_usb_changed)
+            self._toast(f"USB charging level change failed: {err}")
+
+        async_set(self.client.set_usb_charging, args=(level,),
+                  on_success=remember, on_failure=revert)

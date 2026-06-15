@@ -1,21 +1,56 @@
 #!/usr/bin/env bash
 # Install manifest tracking (Bash)
-# Tracks what modules were installed for clean uninstallation
+# Tracks what modules were installed for clean uninstallation.
+#
+# The manifest lives at /var/lib/archer/install-manifest.json (root-owned, 0644)
+# so that install (run as user with sudo) and uninstall (often run via sudo,
+# where $HOME=/root) read and write the same path. It also stops local users
+# tampering with manifest entries that uninstall.sh later sources.
 
-MANIFEST_DIR="$HOME/.local/share/archer"
+MANIFEST_DIR="/var/lib/archer"
 MANIFEST_FILE="$MANIFEST_DIR/install-manifest.json"
 
-# Migrate legacy DAMX manifest location
-_LEGACY_MANIFEST="$HOME/.local/share/damx/install-manifest.json"
-if [[ ! -f "$MANIFEST_FILE" ]] && [[ -f "$_LEGACY_MANIFEST" ]]; then
-    mkdir -p "$MANIFEST_DIR"
-    cp "$_LEGACY_MANIFEST" "$MANIFEST_FILE"
-    if has_cmd sed; then
-        sed -i 's/"core-damx"/"driver"/g' "$MANIFEST_FILE"
-    fi
-fi
+# Legacy locations migrated on first install. Both real-user $HOME and /root
+# are checked because earlier versions wrote under whichever HOME was set when
+# install.sh ran (sometimes via sudo). DAMX is the project's prior name.
+_LEGACY_MANIFEST_CANDIDATES=(
+    "${HOME:-}/.local/share/archer/install-manifest.json"
+    "${HOME:-}/.local/share/damx/install-manifest.json"
+    "/root/.local/share/archer/install-manifest.json"
+    "/root/.local/share/damx/install-manifest.json"
+)
 
-# Write the install manifest after installation
+# Move any legacy manifest into the new location. Idempotent. Run once near
+# the start of install.sh / uninstall.sh.
+migrate_legacy_manifest() {
+    [[ -f "$MANIFEST_FILE" ]] && return 0
+
+    local src
+    for src in "${_LEGACY_MANIFEST_CANDIDATES[@]}"; do
+        [[ -z "$src" ]] && continue
+        [[ -f "$src" ]] || continue
+
+        log "Migrating legacy manifest $src -> $MANIFEST_FILE"
+        run_sudo mkdir -p "$MANIFEST_DIR"
+        run_sudo chmod 755 "$MANIFEST_DIR"
+        run_sudo cp "$src" "$MANIFEST_FILE"
+        run_sudo chmod 644 "$MANIFEST_FILE"
+
+        # Older DAMX manifests used the module ID "core-damx" for what is now "driver".
+        if has_cmd sed; then
+            run_sudo sed -i 's/"core-damx"/"driver"/g' "$MANIFEST_FILE"
+        fi
+
+        # Best-effort cleanup of the legacy file (only if writable by us).
+        if [[ -w "$src" ]]; then
+            rm -f "$src"
+        fi
+        return 0
+    done
+    return 0
+}
+
+# Write the install manifest after installation.
 # Usage: write_manifest "driver battery gpu" "file1 file2" "linuwu-sense/1.0" "envycontrol tlp"
 write_manifest() {
     local modules_str="$1"
@@ -23,8 +58,11 @@ write_manifest() {
     local dkms_str="$3"
     local packages_str="$4"
 
-    mkdir -p "$MANIFEST_DIR"
-    chmod 700 "$MANIFEST_DIR"
+    run_sudo mkdir -p "$MANIFEST_DIR"
+    run_sudo chmod 755 "$MANIFEST_DIR"
+
+    local tmpfile
+    tmpfile="$(mktemp)"
 
     if has_cmd jq; then
         jq -n \
@@ -47,7 +85,7 @@ write_manifest() {
                 files_created: ($files | split(" ") | map(select(. != ""))),
                 dkms_modules: ($dkms | split(" ") | map(select(. != ""))),
                 packages_installed: ($packages | split(" ") | map(select(. != "")))
-            }' > "$MANIFEST_FILE"
+            }' > "$tmpfile"
     else
         # Python fallback: pass values via environment to prevent injection
         ARCHER_VERSION="$INSTALLER_VERSION" \
@@ -58,7 +96,7 @@ write_manifest() {
         ARCHER_FILES="$files_str" \
         ARCHER_DKMS="$dkms_str" \
         ARCHER_PKGS="$packages_str" \
-        ARCHER_MANIFEST="$MANIFEST_FILE" \
+        ARCHER_MANIFEST="$tmpfile" \
         python3 -c "
 import json, datetime, os
 manifest = {
@@ -76,11 +114,13 @@ with open(os.environ['ARCHER_MANIFEST'], 'w') as f:
     json.dump(manifest, f, indent=2)
 "
     fi
+
+    run_sudo install -m 0644 "$tmpfile" "$MANIFEST_FILE"
+    rm -f "$tmpfile"
     log "Install manifest written to $MANIFEST_FILE"
 }
 
-# Read installed modules from manifest
-# Returns space-separated list of module IDs
+# Read installed modules from manifest. Returns space-separated list of module IDs.
 read_manifest_modules() {
     if [[ ! -f "$MANIFEST_FILE" ]]; then
         echo ""
@@ -90,15 +130,20 @@ read_manifest_modules() {
         jq -r '.modules_installed // [] | join(" ")' "$MANIFEST_FILE"
     else
         ARCHER_MANIFEST="$MANIFEST_FILE" python3 -c "
-import json, os
-with open(os.environ['ARCHER_MANIFEST']) as f:
-    data = json.load(f)
+import json, os, sys
+try:
+    with open(os.environ['ARCHER_MANIFEST']) as f:
+        data = json.load(f)
+except (OSError, json.JSONDecodeError) as e:
+    print('', flush=True)
+    sys.stderr.write(f'manifest read failed: {e}\n')
+    sys.exit(1)
 print(' '.join(data.get('modules_installed', [])))
 "
     fi
 }
 
-# Read a specific field from manifest
+# Read a specific field from manifest.
 read_manifest_field() {
     local field="$1"
     if [[ ! -f "$MANIFEST_FILE" ]]; then
@@ -109,9 +154,14 @@ read_manifest_field() {
         jq -r --arg f "$field" '.[$f] // "" | if type == "array" then join(" ") else tostring end' "$MANIFEST_FILE"
     else
         ARCHER_MANIFEST="$MANIFEST_FILE" ARCHER_FIELD="$field" python3 -c "
-import json, os
-with open(os.environ['ARCHER_MANIFEST']) as f:
-    data = json.load(f)
+import json, os, sys
+try:
+    with open(os.environ['ARCHER_MANIFEST']) as f:
+        data = json.load(f)
+except (OSError, json.JSONDecodeError) as e:
+    print('', flush=True)
+    sys.stderr.write(f'manifest read failed: {e}\n')
+    sys.exit(1)
 val = data.get(os.environ['ARCHER_FIELD'], [])
 if isinstance(val, list):
     print(' '.join(val))
@@ -121,12 +171,12 @@ else:
     fi
 }
 
-# Check if manifest exists
+# Check if manifest exists.
 has_manifest() {
     [[ -f "$MANIFEST_FILE" ]]
 }
 
-# Remove the manifest file
+# Remove the manifest file.
 remove_manifest() {
-    rm -f "$MANIFEST_FILE"
+    run_sudo rm -f "$MANIFEST_FILE"
 }

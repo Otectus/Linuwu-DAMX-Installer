@@ -1,6 +1,11 @@
 """
-Client for communicating with the Archer daemon.
-Uses D-Bus (preferred) with Unix socket fallback.
+Client for communicating with the Archer daemon over the system D-Bus.
+
+Every method call has a timeout. Without it, dbus-python defaults to no
+timeout, which is what made the GUI freeze whenever the daemon paused on
+a slow sysfs read or subprocess. The Unix-socket fallback was removed
+because the daemon's socket has been root:root 0o660 since the move to
+D-Bus + polkit, so the user-mode GUI was never able to read it anyway.
 """
 
 import json
@@ -9,16 +14,25 @@ import threading
 
 logger = logging.getLogger("archer-client")
 
-SOCKET_PATH = "/var/run/archer.sock"
+# Default per-call timeout (seconds). Fast enough that a hung daemon is
+# noticed within one polling tick; long enough that ordinary sysfs reads
+# don't false-positive.
 TIMEOUT = 5.0
-MAX_RETRIES = 3
-RETRY_DELAY = 0.5
+
+# Setters that may legitimately take longer than TIMEOUT. envycontrol can
+# reflow the X/Wayland session config; fwupd can scan slow SPI flash.
+LONG_TIMEOUTS = {
+    "set_display_mode": 60.0,
+    "get_firmware_info": 30.0,
+    "restart_daemon": 10.0,
+    "restart_drivers_and_daemon": 15.0,
+}
 
 DBUS_NAME = "io.otectus.Archer1"
 DBUS_PATH = "/io/otectus/Archer1"
 DBUS_IFACE = "io.otectus.Archer1"
 
-# Maps _send_command names to D-Bus method names + argument packaging
+# Maps _send_command names to D-Bus method names + argument packaging.
 _DBUS_METHOD_MAP = {
     "ping": ("Ping", None),
     "get_all_settings": ("GetAllSettings", None),
@@ -50,101 +64,88 @@ _DBUS_METHOD_MAP = {
     "restart_drivers_and_daemon": ("RestartDriversAndDaemon", None),
 }
 
+DAEMON_OFFLINE_HINT = (
+    "Daemon unreachable. Check 'systemctl status archer-daemon' and "
+    "'journalctl -u archer-daemon -n 50'. If the policy file was just "
+    "installed, run 'sudo systemctl reload dbus.service'."
+)
+
 
 class ArcherClient:
-    """Client for the Archer daemon. Prefers D-Bus, falls back to Unix socket."""
+    """Client for the Archer daemon. D-Bus only."""
 
-    def __init__(self, socket_path=SOCKET_PATH):
-        self.socket_path = socket_path
+    def __init__(self):
         self._lock = threading.Lock()
         self._features = []
         self._connected = False
-        self._use_dbus = False
         self._dbus_iface = None
+        self._init_error = None
         self._init_dbus()
 
     def _init_dbus(self):
-        """Try to connect via D-Bus."""
+        """Connect to the daemon via the system D-Bus. Stores any failure
+        on self._init_error so the window can surface it."""
         try:
             import dbus
             bus = dbus.SystemBus()
             proxy = bus.get_object(DBUS_NAME, DBUS_PATH)
             self._dbus_iface = dbus.Interface(proxy, DBUS_IFACE)
-            # Test connection
-            self._dbus_iface.Ping()
-            self._use_dbus = True
+            self._dbus_iface.Ping(timeout=TIMEOUT)
             self._connected = True
+            self._init_error = None
             logger.info("Connected to Archer daemon via D-Bus")
-        except Exception:
-            self._use_dbus = False
-            logger.info("D-Bus unavailable, using Unix socket fallback")
+        except Exception as e:
+            self._connected = False
+            self._init_error = f"{e}"
+            logger.warning(
+                f"D-Bus connection failed: {e}. {DAEMON_OFFLINE_HINT}"
+            )
+
+    @property
+    def init_error(self):
+        """The string from the most recent _init_dbus failure, or None."""
+        return self._init_error
+
+    def reconnect(self):
+        """Try the D-Bus handshake again. Used by the window's backoff loop."""
+        with self._lock:
+            self._init_dbus()
+        return self._connected
 
     def _send_command(self, command, params=None):
         """Send a command and return the response dict."""
-        if self._use_dbus:
-            return self._send_dbus(command, params)
-        return self._send_socket(command, params)
+        return self._send_dbus(command, params)
 
     def _send_dbus(self, command, params=None):
-        """Send command via D-Bus."""
+        """Send command via D-Bus with a per-call timeout."""
         mapping = _DBUS_METHOD_MAP.get(command)
         if not mapping:
             return {"success": False, "error": f"Unknown command: {command}"}
 
+        if self._dbus_iface is None:
+            return {"success": False, "error": DAEMON_OFFLINE_HINT}
+
         method_name, args_fn = mapping
+        timeout = LONG_TIMEOUTS.get(command, TIMEOUT)
         try:
             method = getattr(self._dbus_iface, method_name)
             if args_fn and params:
-                result_json = method(*args_fn(params))
+                result_json = method(*args_fn(params), timeout=timeout)
             else:
-                result_json = method()
+                result_json = method(timeout=timeout)
             self._connected = True
             return json.loads(str(result_json))
         except Exception as e:
             self._connected = False
             error_str = str(e)
-            # Check for polkit denial
             if "not authorized" in error_str.lower() or "authorization" in error_str.lower():
                 return {"success": False, "error": "Authorization denied"}
+            if "timeout" in error_str.lower() or "Timed out" in error_str:
+                return {
+                    "success": False,
+                    "error": f"Daemon did not respond within {timeout}s",
+                }
             return {"success": False, "error": error_str}
-
-    def _send_socket(self, command, params=None):
-        """Send command via Unix socket (fallback)."""
-        import socket as sock_mod
-        request = {"command": command}
-        if params:
-            request["params"] = params
-
-        for attempt in range(MAX_RETRIES):
-            try:
-                sock = sock_mod.socket(sock_mod.AF_UNIX, sock_mod.SOCK_STREAM)
-                sock.settimeout(TIMEOUT)
-                sock.connect(self.socket_path)
-                sock.sendall((json.dumps(request) + "\n").encode("utf-8"))
-
-                data = b""
-                while True:
-                    chunk = sock.recv(8192)
-                    if not chunk:
-                        break
-                    data += chunk
-                    if b"\n" in data:
-                        break
-
-                sock.close()
-                self._connected = True
-                return json.loads(data.decode("utf-8").strip())
-
-            except (ConnectionRefusedError, FileNotFoundError):
-                self._connected = False
-                if attempt < MAX_RETRIES - 1:
-                    import time
-                    time.sleep(RETRY_DELAY)
-            except (sock_mod.timeout, json.JSONDecodeError, OSError) as e:
-                self._connected = False
-                return {"success": False, "error": str(e)}
-
-        return {"success": False, "error": "Cannot connect to daemon"}
 
     @property
     def is_connected(self):
@@ -156,6 +157,12 @@ class ArcherClient:
 
     def has_feature(self, feature):
         return feature in self._features
+
+    # Used by the window to subscribe to TelemetryUpdated. Returns the
+    # raw dbus.Interface or None if the client isn't connected.
+    @property
+    def dbus_iface(self):
+        return self._dbus_iface
 
     # --- High-level API ---
     def ping(self):

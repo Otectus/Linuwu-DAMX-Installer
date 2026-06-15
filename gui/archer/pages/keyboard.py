@@ -4,13 +4,13 @@ Keyboard Lighting page — 4-zone RGB control and effects.
 Per-zone colour picking, effect modes, and a backlight timeout toggle.
 """
 
-import threading
-
 import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Gtk, Adw, Gdk
+
+from archer.widgets.async_set import async_set
 
 
 # ── helpers ──────────────────────────────────────────────────────────
@@ -258,6 +258,11 @@ class KeyboardPage(Gtk.Box):
 
     # ── callbacks ────────────────────────────────────────────────────
 
+    def _toast(self, message):
+        win = self.get_root()
+        if win is not None and hasattr(win, "add_toast"):
+            win.add_toast(Adw.Toast.new(message))
+
     def _on_apply_zones(self, _button):
         # Strip '#' prefix — sysfs expects bare hex like "4287f5"
         z1 = _rgba_to_hex(self.zone_buttons[0].get_rgba()).lstrip("#")
@@ -266,11 +271,11 @@ class KeyboardPage(Gtk.Box):
         z4 = _rgba_to_hex(self.zone_buttons[3].get_rgba()).lstrip("#")
         brightness = int(self.brightness_scale.get_value())
 
-        threading.Thread(
-            target=self.client.set_per_zone_mode,
+        async_set(
+            self.client.set_per_zone_mode,
             args=(z1, z2, z3, z4, brightness),
-            daemon=True,
-        ).start()
+            on_failure=lambda err: self._toast(f"Zone colors not applied: {err}"),
+        )
 
     def _on_apply_effect(self, _button):
         mode = self.effect_mode_row.get_selected()
@@ -281,16 +286,20 @@ class KeyboardPage(Gtk.Box):
         # Direction: index 0 → "Left to Right" = 2, index 1 → "Right to Left" = 1
         direction = 2 if self.direction_row.get_selected() == 0 else 1
 
-        threading.Thread(
-            target=self.client.set_four_zone_mode,
+        async_set(
+            self.client.set_four_zone_mode,
             args=(mode, speed, brightness, direction, r, g, b),
-            daemon=True,
-        ).start()
+            on_failure=lambda err: self._toast(f"Effect not applied: {err}"),
+        )
 
     def _on_backlight_toggled(self, row, _pspec):
         state = row.get_active()
-        threading.Thread(
-            target=self.client.set_backlight_timeout,
-            args=(state,),
-            daemon=True,
-        ).start()
+
+        def revert(err):
+            row.handler_block_by_func(self._on_backlight_toggled)
+            row.set_active(not state)
+            row.handler_unblock_by_func(self._on_backlight_toggled)
+            self._toast(f"Backlight timeout toggle failed: {err}")
+
+        async_set(self.client.set_backlight_timeout, args=(state,),
+                  on_failure=revert)

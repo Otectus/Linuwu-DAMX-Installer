@@ -9,7 +9,6 @@ import json
 import logging
 import os
 import signal
-import socket
 import subprocess
 import sys
 import threading
@@ -18,11 +17,12 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 # --- Configuration ---
-SOCKET_PATH = "/var/run/archer.sock"
-PID_FILE = "/var/run/archer-daemon.pid"
+# /run/archer is created by systemd via RuntimeDirectory=archer in the unit
+# file. The PID location matches PIDFile= in archer-daemon.service.
+PID_FILE = "/run/archer/daemon.pid"
 LOG_FILE = "/var/log/archer-daemon.log"
 SETTINGS_FILE = "/etc/archer/settings.json"
-VERSION = "2.0.0"
+VERSION = "2.0.1"
 
 # Linuwu-Sense sysfs base paths (tried in order)
 DRIVER_BASE_PATHS = [
@@ -71,8 +71,27 @@ def write_sysfs(path, value):
         return False
 
 
-def run_cmd(cmd, timeout=10):
-    """Run a shell command and return stdout."""
+# Shell metacharacters we forbid in dynamic strings. Static literal commands
+# (no $ interpolation) can still pass shell_meta_ok=True if they need pipes
+# or substitutions — see callsites in get_cpu_usage / get_system_info.
+_SHELL_META = (";", "&&", "||", "$(", "`")
+
+
+def run_cmd(cmd, timeout=10, shell_meta_ok=False):
+    """Run a shell command and return stdout.
+
+    shell_meta_ok must be True for any command that contains pipes or
+    substitutions. The default of False catches future regressions where a
+    user-supplied value flows into a shell string.
+    """
+    if not shell_meta_ok:
+        for tok in _SHELL_META:
+            if tok in cmd:
+                logger.error(
+                    f"run_cmd refused: shell metacharacter {tok!r} in command "
+                    f"(set shell_meta_ok=True if intentional): {cmd!r}"
+                )
+                return ""
     try:
         result = subprocess.run(
             cmd, shell=True, capture_output=True, text=True, timeout=timeout
@@ -80,6 +99,47 @@ def run_cmd(cmd, timeout=10):
         return result.stdout.strip()
     except (subprocess.TimeoutExpired, FileNotFoundError):
         return ""
+
+
+class _TtlCache:
+    """Tiny single-value-per-key cache with monotonic TTL.
+
+    Used for hot-path probes (nvidia-smi, lspci) that the GUI's 2-second
+    monitoring loop would otherwise hit too often.
+    """
+
+    def __init__(self, ttl_s):
+        self._ttl = ttl_s
+        self._values = {}
+        self._lock = threading.Lock()
+
+    def get_or_compute(self, key, fn):
+        now = time.monotonic()
+        with self._lock:
+            entry = self._values.get(key)
+            if entry is not None:
+                ts, val = entry
+                if now - ts < self._ttl:
+                    return val
+        # Compute outside the lock so a slow probe doesn't block other keys.
+        val = fn()
+        with self._lock:
+            self._values[key] = (time.monotonic(), val)
+        return val
+
+
+# 5-second TTL is short enough to feel live and long enough to skip 2/3rds
+# of the GUI's 2s polling ticks. Touched by HardwareManager methods below.
+_PROBE_CACHE = _TtlCache(ttl_s=5.0)
+
+# hwmon device names that ship a meaningful fan1_input/temp1_input on Acer
+# laptops. Order is preference — first match wins. Anything else falls back
+# to the legacy "first device with fan1_input" behaviour.
+_HWMON_FAN_NAMES = (
+    "linuwu_sense", "acer_wmi", "nct6775", "nct6779", "nct6798",
+    "it87", "dell_smm_hwmon",
+)
+_HWMON_GPU_TEMP_NAMES = ("nvidia", "amdgpu", "nouveau")
 
 
 # --- Persistent Settings Store ---
@@ -327,7 +387,10 @@ class HardwareManager:
         if bat_paths:
             self.features.append("battery_info")
         # Display mode (envycontrol)
-        if run_cmd("which envycontrol 2>/dev/null"):
+        if _PROBE_CACHE.get_or_compute(
+            "which-envycontrol",
+            lambda: run_cmd("which envycontrol 2>/dev/null", shell_meta_ok=True),
+        ):
             self.features.append("display_mode")
         # Game mode (always available)
         self.features.append("game_mode")
@@ -625,25 +688,41 @@ class HardwareManager:
         """Get GPU temperature from hwmon."""
         for hwmon in sorted(Path("/sys/class/hwmon").glob("hwmon*")):
             name = read_sysfs(hwmon / "name")
-            if name and name.lower() in ("nvidia", "amdgpu", "nouveau"):
+            if name and name.lower() in _HWMON_GPU_TEMP_NAMES:
                 val = read_sysfs(hwmon / "temp1_input")
                 if val:
                     return int(val) // 1000
-        # Try nvidia-smi
-        temp = run_cmd("nvidia-smi --query-gpu=temperature.gpu --format=csv,noheader,nounits 2>/dev/null")
+        # Try nvidia-smi (cached; the binary is slow, sometimes hangs)
+        temp = _PROBE_CACHE.get_or_compute(
+            "nvidia-smi-temp",
+            lambda: run_cmd(
+                "nvidia-smi --query-gpu=temperature.gpu --format=csv,noheader,nounits 2>/dev/null",
+                timeout=3, shell_meta_ok=True,
+            ),
+        )
         if temp and temp.isdigit():
             return int(temp)
         return 0
 
     def get_cpu_usage(self):
         """Get CPU usage percentage."""
-        usage = run_cmd("awk '/^cpu / {u=$2+$4; t=$2+$4+$5; printf \"%.0f\", u/t*100}' /proc/stat")
+        # Static literal awk pipeline; shell_meta_ok=True intentionally.
+        usage = run_cmd(
+            "awk '/^cpu / {u=$2+$4; t=$2+$4+$5; printf \"%.0f\", u/t*100}' /proc/stat",
+            shell_meta_ok=True,
+        )
         return int(usage) if usage and usage.isdigit() else 0
 
     def get_gpu_usage(self):
         """Get GPU usage from nvidia-smi or amdgpu."""
-        # NVIDIA
-        val = run_cmd("nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null")
+        # NVIDIA (cached)
+        val = _PROBE_CACHE.get_or_compute(
+            "nvidia-smi-util",
+            lambda: run_cmd(
+                "nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null",
+                timeout=3, shell_meta_ok=True,
+            ),
+        )
         if val and val.isdigit():
             return int(val)
         # AMD
@@ -656,8 +735,22 @@ class HardwareManager:
         return 0
 
     def get_fan_rpm(self):
-        """Get fan RPM from hwmon or driver."""
+        """Get fan RPM from hwmon. Prefer Acer-relevant chipsets by name."""
         cpu_rpm, gpu_rpm = 0, 0
+        # Pass 1: allowlisted chipsets only.
+        for hwmon in sorted(Path("/sys/class/hwmon").glob("hwmon*")):
+            name = read_sysfs(hwmon / "name") or ""
+            if name.lower() not in _HWMON_FAN_NAMES:
+                continue
+            fan1 = read_sysfs(hwmon / "fan1_input")
+            fan2 = read_sysfs(hwmon / "fan2_input")
+            if fan1:
+                cpu_rpm = int(fan1)
+            if fan2:
+                gpu_rpm = int(fan2)
+            if cpu_rpm or gpu_rpm:
+                return cpu_rpm, gpu_rpm
+        # Pass 2 (fallback): the legacy "first device with fan1_input" rule.
         for hwmon in sorted(Path("/sys/class/hwmon").glob("hwmon*")):
             fan1 = read_sysfs(hwmon / "fan1_input")
             fan2 = read_sysfs(hwmon / "fan2_input")
@@ -692,7 +785,13 @@ class HardwareManager:
                         break
         except OSError:
             pass
-        gpu_model = run_cmd("lspci 2>/dev/null | grep -iE 'vga|3d' | head -1 | sed 's/.*: //'")
+        gpu_model = _PROBE_CACHE.get_or_compute(
+            "lspci-gpu",
+            lambda: run_cmd(
+                "lspci 2>/dev/null | grep -iE 'vga|3d' | head -1 | sed 's/.*: //'",
+                shell_meta_ok=True,
+            ),
+        )
         driver_version = read_sysfs(
             os.path.join(self.driver_base, "version") if self.driver_base else "/dev/null"
         ) or "N/A"
@@ -795,7 +894,10 @@ class HardwareManager:
 
     # --- Display Mode ---
     def get_display_mode(self):
-        mode = run_cmd("envycontrol --query 2>/dev/null")
+        mode = _PROBE_CACHE.get_or_compute(
+            "envycontrol-query",
+            lambda: run_cmd("envycontrol --query 2>/dev/null", shell_meta_ok=True),
+        )
         available_modes = ["integrated", "hybrid", "nvidia"]
         return {
             "mode": mode if mode in available_modes else "unknown",
@@ -807,9 +909,14 @@ class HardwareManager:
         valid_modes = ["integrated", "hybrid", "nvidia"]
         if mode not in valid_modes:
             return {"success": False, "error": f"Invalid mode '{mode}'. Available: {valid_modes}"}
-        if not run_cmd("which envycontrol 2>/dev/null"):
+        if not _PROBE_CACHE.get_or_compute(
+            "which-envycontrol",
+            lambda: run_cmd("which envycontrol 2>/dev/null", shell_meta_ok=True),
+        ):
             return {"success": False, "error": "envycontrol not installed"}
-        result = run_cmd(f"envycontrol -s {mode} 2>&1", timeout=30)
+        # Static format string with whitelisted mode value (validated above);
+        # the trailing 2>&1 makes this a shell construct.
+        result = run_cmd(f"envycontrol -s {mode} 2>&1", timeout=30, shell_meta_ok=True)
         if not result or "error" in result.lower():
             logger.warning(f"Display mode change may have failed: {result}")
             return {"success": False, "error": f"envycontrol failed: {result or 'no output'}", "mode": mode}
@@ -954,10 +1061,29 @@ class HardwareManager:
 
     # --- Driver Management ---
     def restart_daemon(self):
-        run_cmd("systemctl restart archer-daemon.service")
+        # Schedule via systemd-run with a 2s delay so the D-Bus reply
+        # for RestartDaemon has time to flush before SIGTERM lands. The
+        # previous synchronous systemctl restart killed the daemon
+        # before the reply reached the GUI.
+        run_cmd(
+            "systemd-run --on-active=2s --no-block "
+            "systemctl restart archer-daemon.service"
+        )
 
     def restart_drivers_and_daemon(self):
-        run_cmd("modprobe -r linuwu_sense 2>/dev/null; modprobe linuwu_sense; systemctl restart archer-daemon.service")
+        # Same deferred-restart trick. modprobe runs before the daemon
+        # restart so the new daemon picks up the freshly-loaded module.
+        # Each step is its own systemd-run unit so a modprobe failure
+        # doesn't abort the daemon restart.
+        run_cmd(
+            "systemd-run --on-active=1s --no-block "
+            "/bin/sh -c 'modprobe -r linuwu_sense; modprobe linuwu_sense'",
+            shell_meta_ok=True,
+        )
+        run_cmd(
+            "systemd-run --on-active=3s --no-block "
+            "systemctl restart archer-daemon.service"
+        )
 
     def set_modprobe_parameter(self, param):
         """Set a permanent modprobe parameter for linuwu_sense."""
@@ -983,315 +1109,6 @@ class HardwareManager:
             write_sysfs(os.path.join(self.driver_base, "force_parameter"), param)
 
 
-# --- Socket Server ---
-class DaemonServer:
-    """Unix socket server for GUI communication."""
-
-    def __init__(self, hw_manager):
-        self.hw = hw_manager
-        self.running = False
-        self.server_socket = None
-
-    def start(self):
-        # Clean up stale socket
-        if os.path.exists(SOCKET_PATH):
-            os.unlink(SOCKET_PATH)
-
-        self.server_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self.server_socket.bind(SOCKET_PATH)
-        os.chmod(SOCKET_PATH, 0o660)  # Restrict to root + group (GUI uses D-Bus for auth)
-        self.server_socket.listen(5)
-        self.server_socket.settimeout(1.0)
-        self.running = True
-
-        logger.info(f"Daemon listening on {SOCKET_PATH}")
-
-        while self.running:
-            try:
-                conn, _ = self.server_socket.accept()
-                thread = threading.Thread(target=self._handle_client, args=(conn,), daemon=True)
-                thread.start()
-            except socket.timeout:
-                continue
-            except OSError:
-                if self.running:
-                    logger.error("Socket accept error")
-                break
-
-    def stop(self):
-        self.running = False
-        if self.server_socket:
-            self.server_socket.close()
-        if os.path.exists(SOCKET_PATH):
-            os.unlink(SOCKET_PATH)
-
-    def _handle_client(self, conn):
-        try:
-            conn.settimeout(10.0)
-            data = b""
-            while True:
-                chunk = conn.recv(4096)
-                if not chunk:
-                    break
-                data += chunk
-                if b"\n" in data:
-                    break
-
-            if data:
-                request = json.loads(data.decode("utf-8").strip())
-                response = self._dispatch(request)
-                conn.sendall((json.dumps(response) + "\n").encode("utf-8"))
-        except (json.JSONDecodeError, UnicodeDecodeError) as e:
-            error_resp = {"success": False, "error": f"Invalid request: {e}"}
-            conn.sendall((json.dumps(error_resp) + "\n").encode("utf-8"))
-        except Exception as e:
-            logger.error(f"Client handler error: {e}")
-        finally:
-            conn.close()
-
-    def _dispatch(self, request):
-        command = request.get("command", "")
-        params = request.get("params", {})
-
-        handlers = {
-            "ping": self._cmd_ping,
-            "get_all_settings": self._cmd_get_all_settings,
-            "get_monitoring_data": self._cmd_get_monitoring_data,
-            "get_supported_features": self._cmd_get_supported_features,
-            "set_thermal_profile": self._cmd_set_thermal_profile,
-            "set_fan_speed": self._cmd_set_fan_speed,
-            "set_battery_calibration": self._cmd_set_battery_calibration,
-            "set_battery_limiter": self._cmd_set_battery_limiter,
-            "set_usb_charging": self._cmd_set_usb_charging,
-            "set_backlight_timeout": self._cmd_set_backlight_timeout,
-            "set_lcd_override": self._cmd_set_lcd_override,
-            "set_boot_animation_sound": self._cmd_set_boot_animation_sound,
-            "set_per_zone_mode": self._cmd_set_per_zone_mode,
-            "set_four_zone_mode": self._cmd_set_four_zone_mode,
-            "restart_daemon": self._cmd_restart_daemon,
-            "restart_drivers_and_daemon": self._cmd_restart_drivers_and_daemon,
-            "set_modprobe_parameter": self._cmd_set_modprobe_parameter,
-            "remove_modprobe_parameter": self._cmd_remove_modprobe_parameter,
-            "set_fan_curve": self._cmd_set_fan_curve,
-            "get_fan_curve": self._cmd_get_fan_curve,
-            "get_display_mode": self._cmd_get_display_mode,
-            "set_display_mode": self._cmd_set_display_mode,
-            "set_game_mode": self._cmd_set_game_mode,
-            "get_game_mode": self._cmd_get_game_mode,
-            "get_usb_power_policy": self._cmd_get_usb_power_policy,
-            "set_usb_wake": self._cmd_set_usb_wake,
-            "get_firmware_info": self._cmd_get_firmware_info,
-            "set_audio_enhancement": self._cmd_set_audio_enhancement,
-        }
-
-        handler = handlers.get(command)
-        if not handler:
-            return {"success": False, "error": f"Unknown command: {command}"}
-
-        try:
-            return handler(params)
-        except Exception as e:
-            logger.error(f"Command '{command}' failed: {e}")
-            return {"success": False, "error": str(e)}
-
-    def _cmd_ping(self, params):
-        return {"success": True, "data": {"version": VERSION}}
-
-    def _cmd_get_all_settings(self, params):
-        return {"success": True, "data": self.hw.get_all_settings()}
-
-    def _cmd_get_monitoring_data(self, params):
-        return {"success": True, "data": self.hw.get_monitoring_data()}
-
-    def _cmd_get_supported_features(self, params):
-        return {"success": True, "data": {"features": self.hw.features}}
-
-    def _cmd_set_thermal_profile(self, params):
-        profile = params.get("profile", "balanced")
-        ok, err = self.hw.set_thermal_profile(profile)
-        if ok:
-            self.hw.settings.set("thermal_profile", profile)
-        return {"success": ok, "error": err}
-
-    def _cmd_set_fan_speed(self, params):
-        cpu = params.get("cpu", 0)
-        gpu = params.get("gpu", 0)
-        ok = self.hw.set_fan_speed(cpu, gpu)
-        if ok:
-            self.hw.settings.set("fan_speed", {"cpu": cpu, "gpu": gpu})
-        return {"success": ok}
-
-    def _cmd_set_battery_calibration(self, params):
-        enabled = params.get("enabled", False)
-        ok = self.hw.set_battery_calibration(enabled)
-        if ok:
-            self.hw.settings.set("battery_calibration", enabled)
-        return {"success": ok}
-
-    def _cmd_set_battery_limiter(self, params):
-        enabled = params.get("enabled", False)
-        ok = self.hw.set_battery_limiter(enabled)
-        if ok:
-            self.hw.settings.set("battery_limiter", enabled)
-        return {"success": ok}
-
-    def _cmd_set_usb_charging(self, params):
-        level = params.get("level", 0)
-        ok = self.hw.set_usb_charging(level)
-        if ok:
-            self.hw.settings.set("usb_charging", level)
-        return {"success": ok}
-
-    def _cmd_set_backlight_timeout(self, params):
-        enabled = params.get("enabled", False)
-        ok = self.hw.set_backlight_timeout(enabled)
-        if ok:
-            self.hw.settings.set("backlight_timeout", enabled)
-        return {"success": ok}
-
-    def _cmd_set_lcd_override(self, params):
-        enabled = params.get("enabled", False)
-        ok = self.hw.set_lcd_override(enabled)
-        if ok:
-            self.hw.settings.set("lcd_override", enabled)
-        return {"success": ok}
-
-    def _cmd_set_boot_animation_sound(self, params):
-        enabled = params.get("enabled", False)
-        ok = self.hw.set_boot_animation_sound(enabled)
-        if ok:
-            self.hw.settings.set("boot_animation_sound", enabled)
-        return {"success": ok}
-
-    def _cmd_set_per_zone_mode(self, params):
-        zone1 = params.get("zone1", "0000ff")
-        zone2 = params.get("zone2", "ff0000")
-        zone3 = params.get("zone3", "00ff00")
-        zone4 = params.get("zone4", "ffff00")
-        brightness = params.get("brightness", 100)
-        ok = self.hw.set_per_zone_mode(zone1, zone2, zone3, zone4, brightness)
-        if ok:
-            self.hw.settings.set("per_zone_mode", {
-                "zone1": zone1, "zone2": zone2,
-                "zone3": zone3, "zone4": zone4,
-                "brightness": brightness,
-            })
-            self.hw.settings.set("last_keyboard_mode", "per_zone")
-        return {"success": ok}
-
-    def _cmd_set_four_zone_mode(self, params):
-        mode = params.get("mode", 0)
-        speed = params.get("speed", 5)
-        brightness = params.get("brightness", 100)
-        direction = params.get("direction", 2)
-        red = params.get("red", 0)
-        green = params.get("green", 0)
-        blue = params.get("blue", 255)
-        ok = self.hw.set_four_zone_mode(mode, speed, brightness, direction, red, green, blue)
-        if ok:
-            self.hw.settings.set("four_zone_mode", {
-                "mode": mode, "speed": speed, "brightness": brightness,
-                "direction": direction, "red": red, "green": green, "blue": blue,
-            })
-            self.hw.settings.set("last_keyboard_mode", "effect")
-        return {"success": ok}
-
-    def _cmd_restart_daemon(self, params):
-        threading.Thread(target=self.hw.restart_daemon, daemon=True).start()
-        return {"success": True}
-
-    def _cmd_restart_drivers_and_daemon(self, params):
-        threading.Thread(target=self.hw.restart_drivers_and_daemon, daemon=True).start()
-        return {"success": True}
-
-    def _cmd_set_modprobe_parameter(self, params):
-        param = params.get("parameter", "")
-        if param not in ("nitro_v4", "predator_v4", "enable_all"):
-            return {"success": False, "error": f"Invalid parameter: {param}"}
-        ok = self.hw.set_modprobe_parameter(param)
-        return {"success": ok}
-
-    def _cmd_remove_modprobe_parameter(self, params):
-        ok = self.hw.remove_modprobe_parameter()
-        return {"success": ok}
-
-    def _cmd_set_fan_curve(self, params):
-        target = params.get("target")
-        if target not in ("cpu", "gpu"):
-            return {"success": False, "error": "target must be 'cpu' or 'gpu'"}
-        enabled = params.get("enabled", True)
-        points = params.get("points", [])
-        if enabled:
-            if not points or len(points) < 2:
-                return {"success": False, "error": "Need at least 2 curve points"}
-            self.hw.start_fan_curve(target, points)
-        else:
-            self.hw.stop_fan_curve(target)
-        return {"success": True, "data": self.hw.get_fan_curve_state()}
-
-    def _cmd_get_fan_curve(self, params):
-        return {"success": True, "data": self.hw.get_fan_curve_state()}
-
-    def _cmd_get_display_mode(self, params):
-        return {"success": True, "data": self.hw.get_display_mode()}
-
-    def _cmd_set_display_mode(self, params):
-        mode = params.get("mode")
-        if not mode:
-            return {"success": False, "error": "mode parameter required"}
-        result = self.hw.set_display_mode(mode)
-        return {"success": result.get("success", False), "data": result}
-
-    def _cmd_set_game_mode(self, params):
-        enabled = params.get("enabled", False)
-        if enabled:
-            self.hw.activate_game_mode()
-        else:
-            self.hw.deactivate_game_mode()
-        return {"success": True, "data": self.hw.get_game_mode()}
-
-    def _cmd_get_game_mode(self, params):
-        return {"success": True, "data": self.hw.get_game_mode()}
-
-    def _cmd_get_usb_power_policy(self, params):
-        return {"success": True, "data": {
-            "charging_level": self.hw.get_usb_charging(),
-            "wake_sources": self.hw.get_usb_wake_sources(),
-        }}
-
-    def _cmd_set_usb_wake(self, params):
-        device = params.get("device")
-        enabled = params.get("enabled")
-        if not device or enabled is None:
-            return {"success": False, "error": "device and enabled parameters required"}
-        ok = self.hw.set_usb_wake(device, enabled)
-        return {"success": ok}
-
-    def _cmd_get_firmware_info(self, params):
-        return {"success": True, "data": self.hw.get_firmware_info()}
-
-    def _cmd_set_audio_enhancement(self, params):
-        noise = params.get("noise_suppression", False)
-        conf = "/etc/pipewire/filter-chain.conf.d/archer-noise-suppress.conf"
-        conf_disabled = conf + ".disabled"
-        try:
-            if noise:
-                # Enable: rename .disabled back to .conf if it exists
-                if os.path.exists(conf_disabled) and not os.path.exists(conf):
-                    os.rename(conf_disabled, conf)
-                    run_cmd("systemctl --user restart pipewire.service 2>/dev/null")
-            else:
-                # Disable: rename .conf to .disabled
-                if os.path.exists(conf):
-                    os.rename(conf, conf_disabled)
-                    run_cmd("systemctl --user restart pipewire.service 2>/dev/null")
-            self.hw.settings.set("audio_enhancement", {"noise_suppression": noise})
-            return {"success": True, "data": {"noise_suppression": noise}}
-        except OSError as e:
-            logger.error(f"Failed to toggle audio enhancement: {e}")
-            return {"success": False, "error": str(e)}
-
-
 # --- Main ---
 def write_pid():
     Path(PID_FILE).write_text(str(os.getpid()))
@@ -1313,34 +1130,40 @@ def main():
     settings = SettingsStore()
     hw = HardwareManager(settings_store=settings)
 
-    # Try D-Bus first, fall back to Unix socket
-    use_dbus = False
-    _dbus_service = None
-    main_loop = None
-    server = None
-
+    # D-Bus is mandatory. The previous Unix-socket fallback was unreachable
+    # by the user-mode GUI (socket was 0o660 root:root) and only masked real
+    # D-Bus startup failures behind a "deprecated" warning.
     try:
         import dbus.mainloop.glib
         from gi.repository import GLib
         from archer_dbus import ArcherDBusService
+    except ImportError as e:
+        logger.error(
+            f"Failed to import D-Bus dependencies: {e}. "
+            "Install python-dbus and python-gobject, then restart."
+        )
+        cleanup_pid()
+        sys.exit(1)
 
+    try:
         dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
         _dbus_service = ArcherDBusService(hw)  # noqa: F841 — prevent GC
         main_loop = GLib.MainLoop()
-        use_dbus = True
         logger.info("D-Bus service registered (io.otectus.Archer1)")
     except Exception as e:
-        logger.warning(f"D-Bus unavailable ({e}), falling back to Unix socket (DEPRECATED)")
-        server = DaemonServer(hw)
+        logger.error(
+            f"Failed to register D-Bus service: {e}. "
+            "Check that /etc/dbus-1/system.d/io.otectus.Archer1.conf exists "
+            "and 'systemctl reload dbus.service' has been run."
+        )
+        cleanup_pid()
+        sys.exit(1)
 
     def signal_handler(sig, frame):
         logger.info("Shutting down...")
         hw.shutdown_fan_curves()
         hw.deactivate_game_mode()
-        if use_dbus and main_loop:
-            main_loop.quit()
-        elif server:
-            server.stop()
+        main_loop.quit()
         cleanup_pid()
         sys.exit(0)
 
@@ -1348,17 +1171,12 @@ def main():
     signal.signal(signal.SIGINT, signal_handler)
 
     try:
-        if use_dbus:
-            main_loop.run()
-        else:
-            server.start()
+        main_loop.run()
     except KeyboardInterrupt:
         pass
     finally:
         hw.shutdown_fan_curves()
         hw.deactivate_game_mode()
-        if server:
-            server.stop()
         cleanup_pid()
         logger.info("Daemon stopped.")
 

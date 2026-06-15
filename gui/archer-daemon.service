@@ -1,20 +1,34 @@
 [Unit]
 Description=Archer Compatibility Suite - System Daemon
-After=multi-user.target
+After=multi-user.target dbus.service
 Wants=multi-user.target
+Requires=dbus.service
 
 [Service]
 Type=simple
 ExecStart=/usr/bin/python3 /opt/archer/archer_daemon.py
 Restart=on-failure
 RestartSec=5
-PIDFile=/var/run/archer-daemon.pid
+
+# systemd creates /run/archer/ (0755 root:root) at every service start and
+# removes it on stop, so daemon.pid lives in a known clean location.
+RuntimeDirectory=archer
+RuntimeDirectoryMode=0755
+PIDFile=/run/archer/daemon.pid
 
 # Security hardening
 ProtectSystem=full
 ProtectHome=read-only
-NoNewPrivileges=false
 PrivateTmp=true
+
+# Daemon must persist user settings under /etc/archer/. ProtectSystem=full
+# would otherwise make /etc read-only.
+ReadWritePaths=/etc/archer
+
+# Daemon writes to /sys (fan, RGB, thermal_profile) so we cannot enable
+# ProtectKernelTunables=true. NoNewPrivileges stays false because polkit's
+# CheckAuthorization model and any future helper exec require it.
+NoNewPrivileges=false
 
 [Install]
 WantedBy=multi-user.target
