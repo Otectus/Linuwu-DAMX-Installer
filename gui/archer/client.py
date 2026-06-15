@@ -227,6 +227,17 @@ class ArcherClient:
             "direction": direction, "red": r, "green": g, "blue": b,
         })
 
+    def set_display_mode(self, mode):
+        return self._send_command("set_display_mode", {"mode": mode})
+
+    def set_game_mode(self, enabled):
+        return self._send_command("set_game_mode", {"enabled": enabled})
+
+    def set_audio_enhancement(self, noise_suppression):
+        return self._send_command(
+            "set_audio_enhancement", {"noise_suppression": noise_suppression}
+        )
+
     def set_modprobe_parameter(self, parameter):
         return self._send_command("set_modprobe_parameter", {"parameter": parameter})
 

@@ -5,9 +5,9 @@ Audio Enhancement page - noise suppression virtual audio source.
 import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Gtk, Adw, GLib
+from gi.repository import Gtk, Adw
 
-import threading
+from archer.widgets.async_set import async_set
 
 
 class AudioEnhancePage(Gtk.Box):
@@ -106,20 +106,21 @@ class AudioEnhancePage(Gtk.Box):
             self._noise_switch.set_subtitle("Active" if enabled else "Off")
             self._noise_switch.handler_unblock_by_func(self._on_noise_toggled)
 
+    def _toast(self, message):
+        win = self.get_root()
+        if win is not None and hasattr(win, "add_toast"):
+            win.add_toast(Adw.Toast.new(message))
+
     def _on_noise_toggled(self, switch, *args):
         enabled = switch.get_active()
         switch.set_subtitle("Active" if enabled else "Off")
 
-        def _apply():
-            resp = self.client._send_command(
-                "set_audio_enhancement",
-                {"noise_suppression": enabled},
-            )
-            if not resp.get("success", False):
-                # Revert toggle on failure
-                GLib.idle_add(self._revert_toggle, not enabled)
+        def revert(err):
+            self._revert_toggle(not enabled)
+            self._toast(f"Could not change noise suppression: {err}")
 
-        threading.Thread(target=_apply, daemon=True).start()
+        async_set(self.client.set_audio_enhancement, args=(enabled,),
+                  on_failure=revert)
 
     def _revert_toggle(self, state):
         self._noise_switch.handler_block_by_func(self._on_noise_toggled)

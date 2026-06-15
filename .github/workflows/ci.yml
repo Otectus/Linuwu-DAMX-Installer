@@ -87,6 +87,19 @@ jobs:
           python tests/test_validate.py
           python tests/test_policy_actions.py
 
+  gui-construct-smoke:
+    name: GUI Construction Smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install GTK4 / libadwaita / PyGObject + Xvfb
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 \
+            libadwaita-1-0 xvfb
+      - name: Construct every page + window headlessly under Xvfb
+        run: xvfb-run -a python3 tests/test_gui_construct.py
+
   dbus-introspect-smoke:
     name: D-Bus Introspect Smoke
     runs-on: ubuntu-latest

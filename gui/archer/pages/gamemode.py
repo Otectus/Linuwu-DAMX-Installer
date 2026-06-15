@@ -5,9 +5,9 @@ Game Mode page - one-click toggle for maximum gaming performance.
 import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Gtk, Adw, GLib
+from gi.repository import Gtk, Adw
 
-import threading
+from archer.widgets.async_set import async_set
 
 
 class GameModePage(Gtk.Box):
@@ -122,14 +122,17 @@ class GameModePage(Gtk.Box):
             self._badge_label.remove_css_class("success")
             self._badge_label.add_css_class("dim-label")
 
+    def _toast(self, message):
+        win = self.get_root()
+        if win is not None and hasattr(win, "add_toast"):
+            win.add_toast(Adw.Toast.new(message))
+
     def _on_toggle_changed(self, switch, *args):
         enabled = switch.get_active()
         self._set_active_state(enabled)
 
-        def _apply():
-            resp = self.client._send_command("set_game_mode", {"enabled": enabled})
-            success = resp.get("success", False)
-            if not success:
-                GLib.idle_add(self._set_active_state, not enabled, True)
+        def revert(err):
+            self._set_active_state(not enabled, update_switch=True)
+            self._toast(f"Could not toggle game mode: {err}")
 
-        threading.Thread(target=_apply, daemon=True).start()
+        async_set(self.client.set_game_mode, args=(enabled,), on_failure=revert)

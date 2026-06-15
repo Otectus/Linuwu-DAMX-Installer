@@ -12,6 +12,8 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Gtk, Adw, GLib
 
+from archer.widgets.async_set import async_set
+
 
 # Mapping from UI label to daemon profile string.
 _PROFILES = [
@@ -212,6 +214,11 @@ class PerformancePage(Gtk.Box):
     # Internal helpers
     # ------------------------------------------------------------------
 
+    def _toast(self, message):
+        win = self.get_root()
+        if win is not None and hasattr(win, "add_toast"):
+            win.add_toast(Adw.Toast.new(message))
+
     def _refresh_after_change(self):
         """Re-fetch all settings from the daemon and reload the page."""
 
@@ -275,6 +282,8 @@ class PerformancePage(Gtk.Box):
                 self._updating_profiles = False
             return
 
+        previous_profile = self._current_profile
+
         # De-select all other buttons (radio behaviour)
         self._updating_profiles = True
         for key, btn in self._profile_buttons.items():
@@ -286,12 +295,15 @@ class PerformancePage(Gtk.Box):
 
         self._current_profile = daemon_key
 
-        # Apply in background thread
-        def _apply():
-            self.client.set_thermal_profile(daemon_key)
-            GLib.idle_add(self._refresh_after_change)
+        def revert(err):
+            # Restore the previously-active profile and resync the buttons.
+            self._current_profile = previous_profile
+            self._update_profile_buttons()
+            self._toast(f"Could not change profile: {err}")
 
-        threading.Thread(target=_apply, daemon=True).start()
+        async_set(self.client.set_thermal_profile, args=(daemon_key,),
+                  on_success=lambda _d: self._refresh_after_change(),
+                  on_failure=revert)
 
     def _on_fan_mode_changed(self, combo_row, _pspec):
         """React to the fan mode combo-row changing."""
@@ -300,30 +312,19 @@ class PerformancePage(Gtk.Box):
         selected = combo_row.get_selected()
 
         if selected == 0:
-            # Automatic
-            def _auto():
-                self.client.set_fan_speed(0, 0)
-                GLib.idle_add(self._refresh_after_change)
-
-            threading.Thread(target=_auto, daemon=True).start()
-
+            self._apply_fan_speed(0, 0)       # Automatic
         elif selected == 1:
-            # Maximum
-            def _max():
-                self.client.set_fan_speed(100, 100)
-                GLib.idle_add(self._refresh_after_change)
-
-            threading.Thread(target=_max, daemon=True).start()
-
+            self._apply_fan_speed(100, 100)   # Maximum
         # Manual: wait for user to press Apply
 
     def _on_apply_fan_clicked(self, _button):
         """Send manual fan speeds to the daemon."""
         cpu = int(self._cpu_scale.get_value())
         gpu = int(self._gpu_scale.get_value())
+        self._apply_fan_speed(cpu, gpu)
 
-        def _send():
-            self.client.set_fan_speed(cpu, gpu)
-            GLib.idle_add(self._refresh_after_change)
-
-        threading.Thread(target=_send, daemon=True).start()
+    def _apply_fan_speed(self, cpu, gpu):
+        async_set(self.client.set_fan_speed, args=(cpu, gpu),
+                  on_success=lambda _d: self._refresh_after_change(),
+                  on_failure=lambda err: (self._toast(f"Fan change failed: {err}"),
+                                          self._refresh_after_change()))

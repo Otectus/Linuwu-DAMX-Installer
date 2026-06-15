@@ -8,6 +8,7 @@ gi.require_version("Adw", "1")
 from gi.repository import Gtk, Adw
 
 from archer.widgets.async_set import async_set
+from archer.widgets.confirm import confirm_action
 
 
 class BatteryPage(Gtk.Box):
@@ -213,6 +214,17 @@ class BatteryPage(Gtk.Box):
                   on_failure=revert)
 
     def _on_start_calibration(self, button):
+        confirm_action(
+            self,
+            heading="Start battery calibration?",
+            body="Calibration runs a full charge/discharge cycle and can take "
+                 "several hours. Keep the laptop on AC power the whole time.",
+            confirm_label="Start Calibration",
+            kind="suggested",
+            on_confirm=self._start_calibration,
+        )
+
+    def _start_calibration(self):
         self._set_calibrating(True)
 
         def revert(err):

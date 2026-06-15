@@ -46,7 +46,7 @@ class SystemPage(Gtk.Box):
         )
 
         self.boot_switch = Adw.SwitchRow(
-            title="Boot Animation & Sound",
+            title="Boot Animation &amp; Sound",
             subtitle="Enable Acer's startup animation and boot sound.",
         )
         self.boot_switch.connect("notify::active", self._on_boot_toggled)

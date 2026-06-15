@@ -7,7 +7,8 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Gtk, Adw
 
-import threading
+from archer.widgets.async_set import async_set
+from archer.widgets.confirm import confirm_action
 
 
 class InternalsPage(Gtk.Box):
@@ -116,7 +117,7 @@ class InternalsPage(Gtk.Box):
         service_group.add(restart_daemon_row)
 
         restart_all_row = Adw.ActionRow(
-            title="Restart Drivers & Daemon",
+            title="Restart Drivers &amp; Daemon",
             subtitle="Fully reloads the Linuwu-Sense kernel module and restarts the daemon.",
             activatable=True,
         )
@@ -157,39 +158,50 @@ class InternalsPage(Gtk.Box):
         self.conn_type_row.set_subtitle(laptop_type.title())
         self.conn_features_row.set_subtitle(str(len(features)))
 
-    def _send_threaded(self, func, *args):
-        threading.Thread(target=func, args=args, daemon=True).start()
+    def _send(self, fn, args=(), pending_msg=None):
+        """Run a daemon call, surfacing failures as a toast."""
+        if pending_msg:
+            self._show_toast(pending_msg)
+        async_set(fn, args=args,
+                  on_failure=lambda err: self._show_toast(f"Request failed: {err}"))
 
     def _on_force_nitro(self, button):
-        self._send_threaded(self.client.set_modprobe_parameter, "nitro_v4")
-        self._show_toast("Loading with nitro_v4 parameter...")
+        self._send(self.client.set_modprobe_parameter, ("nitro_v4",),
+                   "Loading with nitro_v4 parameter…")
 
     def _on_force_predator(self, button):
-        self._send_threaded(self.client.set_modprobe_parameter, "predator_v4")
-        self._show_toast("Loading with predator_v4 parameter...")
+        self._send(self.client.set_modprobe_parameter, ("predator_v4",),
+                   "Loading with predator_v4 parameter…")
 
     def _on_force_enable_all(self, button):
-        self._send_threaded(self.client.set_modprobe_parameter, "enable_all")
-        self._show_toast("Loading with enable_all parameter...")
+        self._send(self.client.set_modprobe_parameter, ("enable_all",),
+                   "Loading with enable_all parameter…")
 
     def _on_apply_override(self, button):
         idx = self.override_combo.get_selected()
         params = [None, "nitro_v4", "predator_v4", "enable_all"]
         if idx == 0:
-            self._send_threaded(self.client.remove_modprobe_parameter)
-            self._show_toast("Override removed.")
+            self._send(self.client.remove_modprobe_parameter, (), "Override removed.")
         else:
             param = params[idx]
-            self._send_threaded(self.client.set_modprobe_parameter, param)
-            self._show_toast(f"Override set: {param}")
+            self._send(self.client.set_modprobe_parameter, (param,),
+                       f"Override set: {param}")
 
     def _on_restart_daemon(self, button):
-        self._send_threaded(self.client.restart_daemon)
-        self._show_toast("Daemon restart requested...")
+        self._send(self.client.restart_daemon, (), "Daemon restart requested…")
 
     def _on_restart_drivers(self, button):
-        self._send_threaded(self.client.restart_drivers_and_daemon)
-        self._show_toast("Full driver & daemon restart requested...")
+        confirm_action(
+            self,
+            heading="Restart drivers and daemon?",
+            body="This fully reloads the Linuwu-Sense kernel module and restarts "
+                 "the Archer daemon. Hardware controls will be briefly unavailable.",
+            confirm_label="Full Restart",
+            kind="destructive",
+            on_confirm=lambda: self._send(
+                self.client.restart_drivers_and_daemon, (),
+                "Full driver & daemon restart requested…"),
+        )
 
     def _show_toast(self, message):
         """Show a toast notification in the window."""

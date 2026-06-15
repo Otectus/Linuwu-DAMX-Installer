@@ -5,9 +5,10 @@ Display Mode Manager page - GPU mode switching, MUX detection, Optimus info.
 import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Gtk, Adw, GLib
+from gi.repository import Gtk, Adw
 
-import threading
+from archer.widgets.async_set import async_set
+from archer.widgets.confirm import confirm_action
 
 
 _GPU_MODES = [
@@ -133,8 +134,11 @@ class DisplayPage(Gtk.Box):
             self._mux_row.set_subtitle("Not available")
             self._mux_group.set_visible(False)
 
-        # Reboot pending
-        pending = data.get("display_mode_reboot_pending", False)
+        # Reboot pending. The daemon doesn't persist this flag, so OR it with
+        # our local state: once a switch is applied the banner stays until the
+        # user reboots (or dismisses it), instead of clearing on the next
+        # settings refresh.
+        pending = data.get("display_mode_reboot_pending", False) or self._reboot_pending
         self._reboot_pending = pending
         self._reboot_banner.set_revealed(pending)
 
@@ -159,25 +163,38 @@ class DisplayPage(Gtk.Box):
                 btn.add_css_class("suggested-action")
                 btn.remove_css_class("success")
 
+    def _toast(self, message):
+        win = self.get_root()
+        if win is not None and hasattr(win, "add_toast"):
+            win.add_toast(Adw.Toast.new(message))
+
     def _on_mode_selected(self, button, mode_key):
-        """Handle mode selection button click."""
+        """Confirm, then switch GPU display mode (requires a reboot)."""
+        labels = {"integrated": "Integrated", "hybrid": "Hybrid", "nvidia": "NVIDIA"}
+        confirm_action(
+            self,
+            heading=f"Switch to {labels.get(mode_key, mode_key)} mode?",
+            body="The GPU display mode will change and a reboot is required "
+                 "before it takes effect. Save your work first.",
+            confirm_label="Switch Mode",
+            kind="suggested",
+            on_confirm=lambda: self._apply_mode(button, mode_key),
+        )
+
+    def _apply_mode(self, button, mode_key):
         button.set_sensitive(False)
-        button.set_label("Applying...")
+        button.set_label("Applying…")
 
-        def _apply():
-            resp = self.client._send_command("set_display_mode", {"mode": mode_key})
-            success = resp.get("success", False)
+        def on_success(_data):
+            self._current_mode = mode_key
+            self._update_mode_display(mode_key)
+            self._reboot_pending = True
+            self._reboot_banner.set_revealed(True)
 
-            def _update():
-                if success:
-                    self._current_mode = mode_key
-                    self._update_mode_display(mode_key)
-                    self._reboot_banner.set_revealed(True)
-                    self._reboot_pending = True
-                else:
-                    button.set_sensitive(True)
-                    button.set_label("Select")
+        def on_failure(err):
+            button.set_sensitive(True)
+            button.set_label("Select")
+            self._toast(f"Could not switch display mode: {err}")
 
-            GLib.idle_add(_update)
-
-        threading.Thread(target=_apply, daemon=True).start()
+        async_set(self.client.set_display_mode, args=(mode_key,),
+                  on_success=on_success, on_failure=on_failure)
