@@ -1139,8 +1139,10 @@ def main():
         from archer_dbus import ArcherDBusService
     except ImportError as e:
         logger.error(
-            f"Failed to import D-Bus dependencies: {e}. "
-            "Install python-dbus and python-gobject, then restart."
+            f"Failed to import a required module: {e}. "
+            "If this is a system dependency, install python-dbus and "
+            "python-gobject. If it's a bundled Archer module (e.g. "
+            "archer_validate), re-run the installer: ./install.sh --modules gui."
         )
         cleanup_pid()
         sys.exit(1)

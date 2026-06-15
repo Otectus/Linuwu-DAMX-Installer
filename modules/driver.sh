@@ -77,9 +77,16 @@ DKMS_EOF
     log "Blacklisting acer_wmi..."
     echo "blacklist acer_wmi" | run_sudo tee /etc/modprobe.d/blacklist-acer-wmi.conf > /dev/null
 
+    # Ensure linuwu_sense loads deterministically at boot. With acer_wmi
+    # blacklisted, systemd-modules-load modprobes linuwu_sense early instead of
+    # relying on modalias autoload (which doesn't always fire).
+    log "Configuring $DRIVER_MODULE to load at boot..."
+    echo "$DRIVER_MODULE" | run_sudo tee "/etc/modules-load.d/${DRIVER_MODULE}.conf" > /dev/null
+
     mark_reboot_required
 
     INSTALLED_FILES+=" /etc/modprobe.d/blacklist-acer-wmi.conf"
+    INSTALLED_FILES+=" /etc/modules-load.d/${DRIVER_MODULE}.conf"
     INSTALLED_DKMS+=" ${DKMS_NAME}/${DKMS_VERSION}"
 }
 
@@ -90,6 +97,7 @@ module_uninstall() {
 
     log "Restoring acer_wmi (removing blacklist)..."
     run_sudo rm -f /etc/modprobe.d/blacklist-acer-wmi.conf
+    run_sudo rm -f "/etc/modules-load.d/${DRIVER_MODULE}.conf"
 }
 
 module_verify() {

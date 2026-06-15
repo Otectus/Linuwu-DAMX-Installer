@@ -29,6 +29,7 @@ module_install() {
         "$SCRIPT_DIR/gui/archer_daemon.py"
         "$SCRIPT_DIR/gui/archer_dbus.py"
         "$SCRIPT_DIR/gui/archer_gui.py"
+        "$SCRIPT_DIR/gui/archer_validate.py"
         "$SCRIPT_DIR/gui/io.otectus.Archer1.conf"
         "$SCRIPT_DIR/gui/io.otectus.Archer1.policy"
         "$SCRIPT_DIR/gui/archer-daemon.service"
@@ -50,11 +51,11 @@ module_install() {
     run_sudo mkdir -p "$_GUI_INSTALL_DIR"
     run_sudo mkdir -p "$_GUI_SETTINGS_DIR"
 
-    # Copy application files
+    # Copy application files. Glob every top-level gui/*.py so new modules
+    # (e.g. archer_validate.py) ship automatically — a hardcoded list previously
+    # omitted archer_validate.py and crash-looped the daemon on import.
     log "Installing Archer GUI to $_GUI_INSTALL_DIR..."
-    run_sudo cp "$SCRIPT_DIR/gui/archer_daemon.py" "$_GUI_INSTALL_DIR/"
-    run_sudo cp "$SCRIPT_DIR/gui/archer_dbus.py" "$_GUI_INSTALL_DIR/"
-    run_sudo cp "$SCRIPT_DIR/gui/archer_gui.py" "$_GUI_INSTALL_DIR/"
+    run_sudo cp "$SCRIPT_DIR"/gui/*.py "$_GUI_INSTALL_DIR/"
     run_sudo cp -r "$SCRIPT_DIR/gui/archer" "$_GUI_INSTALL_DIR/"
     run_sudo cp -r "$SCRIPT_DIR/gui/assets" "$_GUI_INSTALL_DIR/"
 
@@ -88,8 +89,9 @@ module_install() {
     run_sudo systemctl daemon-reload
     run_sudo systemctl enable archer-daemon.service
 
-    # Start daemon (may fail if Linuwu-Sense not yet loaded)
-    if ! run_sudo systemctl start archer-daemon.service 2>/dev/null; then
+    # (Re)start the daemon. Use restart so reinstalling over a previously
+    # crash-looping/auto-restart unit cleanly picks up the new files.
+    if ! run_sudo systemctl restart archer-daemon.service 2>/dev/null; then
         warn "Daemon did not start — Linuwu-Sense driver may not be loaded yet."
         warn "It will start automatically after reboot if the driver module is installed."
     fi
