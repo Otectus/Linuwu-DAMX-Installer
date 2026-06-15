@@ -26,8 +26,51 @@
     </defaults>
   </action>
 
+  <!-- Hardware actions split by domain for least privilege. Each is still
+       admin-gated; auth_admin_keep caches the grant for the active session so
+       the extra granularity does not add repeated prompts in normal use. -->
+  <action id="io.otectus.archer1.set-battery">
+    <description>Change battery settings (charge limit, calibration)</description>
+    <message>Authentication is required to change battery settings.</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
+  <action id="io.otectus.archer1.set-keyboard">
+    <description>Change keyboard lighting and backlight settings</description>
+    <message>Authentication is required to change keyboard settings.</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
+  <action id="io.otectus.archer1.set-usb">
+    <description>Change USB power and wake settings</description>
+    <message>Authentication is required to change USB power settings.</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
+  <action id="io.otectus.archer1.set-audio">
+    <description>Change audio enhancement settings</description>
+    <message>Authentication is required to change audio settings.</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
   <action id="io.otectus.archer1.set-hardware">
-    <description>Change hardware settings (battery, keyboard, USB, audio)</description>
+    <description>Change panel and boot hardware toggles (LCD overdrive, boot animation)</description>
     <message>Authentication is required to change hardware settings.</message>
     <defaults>
       <allow_any>auth_admin</allow_any>

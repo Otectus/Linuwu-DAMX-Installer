@@ -73,6 +73,20 @@ jobs:
             python -m py_compile "$f"
           done
 
+  python-unit:
+    name: Python Unit Tests (validators + policy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run pure-Python unit tests (no dbus/gi needed)
+        run: |
+          set -e
+          python tests/test_validate.py
+          python tests/test_policy_actions.py
+
   dbus-introspect-smoke:
     name: D-Bus Introspect Smoke
     runs-on: ubuntu-latest

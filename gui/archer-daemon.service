@@ -25,6 +25,21 @@ PrivateTmp=true
 # would otherwise make /etc read-only.
 ReadWritePaths=/etc/archer
 
+# Additional sandboxing. The daemon only reads/writes /sys + /etc/archer and
+# shells out to system tools (and triggers modprobe via systemd-run transient
+# units, not in-process), so these restrictions don't remove needed function.
+ProtectClock=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+LockPersonality=true
+SystemCallArchitectures=native
+
 # Daemon writes to /sys (fan, RGB, thermal_profile) so we cannot enable
 # ProtectKernelTunables=true. NoNewPrivileges stays false because polkit's
 # CheckAuthorization model and any future helper exec require it.
