@@ -198,11 +198,21 @@ detect_kernel() {
         fi
     fi
 
-    # Detect Clang-built kernel (CachyOS and other distros may build with Clang/LLVM)
+    # Detect Clang-built kernel (CachyOS and other distros may build with Clang/LLVM).
+    # /proc/version is the fast path but not always reliable, so also consult the
+    # kernel build config (CONFIG_CC_IS_CLANG) via /proc/config.gz or /boot/config-*.
     IS_CLANG_KERNEL=0
     CLANG_BUILD_FLAGS=""
     if grep -q "clang" /proc/version 2>/dev/null; then
         IS_CLANG_KERNEL=1
+    elif [[ -r /proc/config.gz ]] && command -v gzip >/dev/null 2>&1 \
+        && gzip -dc /proc/config.gz 2>/dev/null | grep -q "^CONFIG_CC_IS_CLANG=y"; then
+        IS_CLANG_KERNEL=1
+    elif [[ -r "/boot/config-${KERNEL_VERSION}" ]] \
+        && grep -q "^CONFIG_CC_IS_CLANG=y" "/boot/config-${KERNEL_VERSION}" 2>/dev/null; then
+        IS_CLANG_KERNEL=1
+    fi
+    if [[ "$IS_CLANG_KERNEL" -eq 1 ]]; then
         CLANG_BUILD_FLAGS="LLVM=1 CC=clang"
     fi
 }

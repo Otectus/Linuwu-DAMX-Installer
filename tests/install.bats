@@ -82,3 +82,55 @@ setup() {
     ! is_known_module "unknown"
     ! is_known_module "fakemod"
 }
+
+@test "module_index returns correct positions and fails for unknown" {
+    [ "$(module_index driver)" = "0" ]
+    [ "$(module_index thermal)" = "7" ]
+    [ "$(module_index firmware)" = "$(( ${#MODULE_IDS[@]} - 1 ))" ]
+    run module_index not-a-module
+    [ "$status" -ne 0 ]
+}
+
+@test "is_module_selected / set_module_selected key off IDs" {
+    MODULE_SELECTED=(); for _ in "${MODULE_IDS[@]}"; do MODULE_SELECTED+=(0); done
+    set_module_selected driver 1
+    is_module_selected driver
+    ! is_module_selected thermal
+    set_module_selected driver 0
+    ! is_module_selected driver
+}
+
+@test "conflict detection survives MODULE_IDS reordering" {
+    # Simulate a future reorder/insert: driver and thermal no longer at 0/7.
+    MODULE_IDS=("gui" "thermal" "battery" "driver")
+    MODULE_SELECTED=(0 0 0 0)
+    set_module_selected driver 1
+    set_module_selected thermal 1
+    ! check_conflicts
+    set_module_selected thermal 0
+    check_conflicts
+}
+
+@test "verify_modules returns non-zero when a module fails verification" {
+    # Select only the first module and force its verify to fail.
+    MODULE_SELECTED=(); for _ in "${MODULE_IDS[@]}"; do MODULE_SELECTED+=(0); done
+    MODULE_SELECTED[0]=1
+    FAILED_MODULES=()
+    # Stub sourcing + a failing verify (avoid touching the real module).
+    source() { :; }
+    module_verify() { return 1; }
+    run verify_modules
+    [ "$status" -ne 0 ]
+    [ "$VERIFY_PASSED" -eq 0 ]
+    [ "$VERIFY_TOTAL" -eq 1 ]
+}
+
+@test "verify_modules skips modules that failed to install" {
+    MODULE_SELECTED=(); for _ in "${MODULE_IDS[@]}"; do MODULE_SELECTED+=(0); done
+    MODULE_SELECTED[0]=1
+    FAILED_MODULES=("${MODULE_IDS[0]}")
+    source() { :; }
+    module_verify() { return 0; }
+    run verify_modules
+    [ "$VERIFY_TOTAL" -eq 0 ]
+}

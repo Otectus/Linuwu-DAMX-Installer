@@ -39,7 +39,7 @@ module_install() {
     # Install via AUR helper or manual DKMS
     if [[ -n "$AUR_HELPER" ]]; then
         log "Installing acer-wmi-battery via $AUR_HELPER..."
-        run $AUR_HELPER -S --needed --noconfirm acer-wmi-battery-dkms-git
+        run "$AUR_HELPER" -S --needed --noconfirm acer-wmi-battery-dkms-git
     else
         log "No AUR helper found. Installing manually from GitHub..."
         local src_dir="/usr/src/${_BATTERY_DKMS_NAME}-${_BATTERY_DKMS_VERSION}"

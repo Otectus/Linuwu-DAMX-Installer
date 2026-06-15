@@ -29,12 +29,14 @@ module_install() {
     else
         log "No AUR helper found. Building noise-suppression-for-voice from AUR..."
         local _nsv_dir
-        _nsv_dir="$(mktemp -d /tmp/archer-nsv-XXXXXX)"
-        if run git clone https://aur.archlinux.org/noise-suppression-for-voice.git "$_nsv_dir"; then
+        if ! _nsv_dir="$(mktemp -d "${TMPDIR:-/tmp}/archer-nsv-XXXXXX")"; then
+            warn "Failed to create temp build directory. Install 'noise-suppression-for-voice' manually."
+        elif run git clone https://aur.archlinux.org/noise-suppression-for-voice.git "$_nsv_dir"; then
             (cd "$_nsv_dir" && makepkg -si --needed --noconfirm) || warn "makepkg failed. Install 'noise-suppression-for-voice' manually."
             rm -rf "$_nsv_dir"
         else
             warn "Failed to clone AUR package. Install 'noise-suppression-for-voice' manually."
+            rm -rf "$_nsv_dir"
         fi
     fi
 

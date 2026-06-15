@@ -20,6 +20,11 @@ INSTALLED_FILES=""
 INSTALLED_DKMS=""
 INSTALLED_PACKAGES=""
 
+# --- Result tracking (for an honest final summary) ---
+FAILED_MODULES=()
+VERIFY_PASSED=0
+VERIFY_TOTAL=0
+
 # --- CLI argument parsing ---
 SELECT_ALL_RECOMMENDED=0
 EXPLICIT_MODULES=""
@@ -102,17 +107,18 @@ display_menu() {
             tag="[OPTIONAL]"
         fi
 
-        # Check conflicts
-        if [[ "$id" = "thermal" ]] && [[ "${MODULE_SELECTED[0]}" -eq 1 ]]; then
-            tag="${_RED}[CONFLICTS WITH #1]${_RESET}"
+        # Check conflicts (keyed by module ID, not array position, so reordering
+        # MODULE_IDS can never silently break this). Displayed numbers are 1-based.
+        if [[ "$id" = "thermal" ]] && is_module_selected "driver"; then
+            tag="${_RED}[CONFLICTS WITH #$(( $(module_index driver) + 1 ))]${_RESET}"
         fi
-        if [[ "$id" = "driver" ]] && [[ "${MODULE_SELECTED[7]}" -eq 1 ]]; then
-            tag="${_RED}[CONFLICTS WITH #8]${_RESET}"
+        if [[ "$id" = "driver" ]] && is_module_selected "thermal"; then
+            tag="${_RED}[CONFLICTS WITH #$(( $(module_index thermal) + 1 ))]${_RESET}"
         fi
 
         # GUI dependency hint
-        if [[ "$id" = "gui" ]] && [[ "${MODULE_SELECTED[0]}" -eq 0 ]]; then
-            tag="${tag} ${_YELLOW}(needs #1 Linuwu-Sense)${_RESET}"
+        if [[ "$id" = "gui" ]] && ! is_module_selected "driver"; then
+            tag="${tag} ${_YELLOW}(needs #$(( $(module_index driver) + 1 )) Linuwu-Sense)${_RESET}"
         fi
 
         # Selection marker
@@ -146,8 +152,9 @@ init_selections() {
 }
 
 check_conflicts() {
-    # driver (#0) and thermal (#7) conflict
-    if [[ "${MODULE_SELECTED[0]}" -eq 1 ]] && [[ "${MODULE_SELECTED[7]}" -eq 1 ]]; then
+    # driver and thermal conflict: the Linuwu-Sense driver blacklists acer_wmi,
+    # which native thermal profiles require. Keyed by module ID, not position.
+    if is_module_selected "driver" && is_module_selected "thermal"; then
         warn "Linuwu-Sense driver and Kernel Thermal Profiles both selected."
         warn "These conflict: Linuwu-Sense blacklists acer_wmi, which thermal profiles require."
         warn "Please deselect one of them."
@@ -246,6 +253,7 @@ run_selected_modules() {
                 INSTALLED_FILES="$_files_pre"
                 INSTALLED_DKMS="$_dkms_pre"
                 INSTALLED_PACKAGES="$_pkgs_pre"
+                FAILED_MODULES+=("$id")
                 continue
             fi
             installed_names+=("$id")
@@ -263,21 +271,26 @@ run_selected_modules() {
 
 verify_modules() {
     section "Verification"
-    local total=0
-    local passed=0
+    VERIFY_TOTAL=0
+    VERIFY_PASSED=0
 
     for i in "${!MODULE_IDS[@]}"; do
         if [[ "${MODULE_SELECTED[$i]}" -eq 1 ]]; then
             local id="${MODULE_IDS[$i]}"
             local label="${MODULE_LABELS[$i]}"
-            total=$((total + 1))
+            # Skip modules that failed to install — verifying them would only
+            # produce noise and falsely lower the pass rate.
+            if is_in_list "$id" "${FAILED_MODULES[*]:-}"; then
+                continue
+            fi
+            VERIFY_TOTAL=$((VERIFY_TOTAL + 1))
 
             # Re-source to restore this module's function definitions (each module
             # overrides the same names: module_verify, module_install, etc.)
             source "$SCRIPT_DIR/modules/${id}.sh"
             if module_verify; then
                 success "$label"
-                passed=$((passed + 1))
+                VERIFY_PASSED=$((VERIFY_PASSED + 1))
             else
                 warn "$label (check warnings above)"
             fi
@@ -285,7 +298,8 @@ verify_modules() {
     done
 
     echo ""
-    log "Verification: $passed/$total modules passed"
+    log "Verification: $VERIFY_PASSED/$VERIFY_TOTAL modules passed"
+    [[ "$VERIFY_PASSED" -eq "$VERIFY_TOTAL" ]]
 }
 
 # --- Main entry point ---
@@ -371,14 +385,13 @@ main() {
         done
         IFS=',' read -ra explicit_list <<< "$EXPLICIT_MODULES"
         for mod in "${explicit_list[@]}"; do
+            # Trim surrounding whitespace so "driver, battery" parses cleanly.
+            mod="${mod#"${mod%%[![:space:]]*}"}"
+            mod="${mod%"${mod##*[![:space:]]}"}"
             if ! is_known_module "$mod"; then
                 error "Unknown or invalid module: '$mod' (available: ${MODULE_IDS[*]})"
             fi
-            for i in "${!MODULE_IDS[@]}"; do
-                if [[ "${MODULE_IDS[$i]}" = "$mod" ]]; then
-                    MODULE_SELECTED[i]=1
-                fi
-            done
+            set_module_selected "$mod" 1
         done
         if ! check_conflicts; then
             error "Module conflict detected. Aborting."
@@ -420,12 +433,26 @@ main() {
     # Run selected modules
     run_selected_modules
 
-    # Verify
-    verify_modules
+    # Verify (returns non-zero if any verified module failed; guarded so set -e
+    # doesn't abort the run before the summary).
+    local verify_ok=0
+    if verify_modules; then
+        verify_ok=1
+    fi
 
-    # Final summary
+    # Final summary — honest about partial failures.
     section "Installation Complete"
-    success "All selected modules have been installed."
+    local failed_count="${#FAILED_MODULES[@]}"
+    local installed_count=$((count - failed_count))
+    if [[ "$failed_count" -gt 0 ]]; then
+        warn "$installed_count of $count selected module(s) installed; $failed_count failed: ${FAILED_MODULES[*]}"
+        warn "Review the output above for details on the failed module(s)."
+    elif [[ "$verify_ok" -eq 0 ]]; then
+        warn "All $count module(s) installed, but verification reported issues ($VERIFY_PASSED/$VERIFY_TOTAL passed)."
+        warn "This is often because a reboot is required before some checks pass."
+    else
+        success "All $count selected module(s) installed and verified."
+    fi
 
     if [[ "$REBOOT_REQUIRED" -eq 1 ]]; then
         echo ""
@@ -435,6 +462,11 @@ main() {
     echo ""
     log "Manifest saved to: $MANIFEST_FILE"
     log "To uninstall, run: ./uninstall.sh"
+
+    # Non-zero exit on real install failures so callers/CI can detect them.
+    if [[ "$failed_count" -gt 0 ]]; then
+        exit 1
+    fi
 }
 
 # Only run main when executed directly (not when sourced for testing)

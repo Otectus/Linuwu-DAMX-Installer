@@ -32,3 +32,29 @@ is_known_module() {
     done
     return 1
 }
+
+# Echo the array index of a module ID within MODULE_IDS; return 1 if unknown.
+# Use this instead of hardcoded positions so reordering MODULE_IDS never
+# silently breaks selection/conflict logic.
+module_index() {
+    local id="$1" i
+    for i in "${!MODULE_IDS[@]}"; do
+        [[ "${MODULE_IDS[$i]}" == "$id" ]] && { printf '%s' "$i"; return 0; }
+    done
+    return 1
+}
+
+# Return 0 iff the given module ID is currently selected. Operates on the
+# MODULE_SELECTED array defined by the caller (install.sh).
+is_module_selected() {
+    local id="$1" idx
+    idx="$(module_index "$id")" || return 1
+    [[ "${MODULE_SELECTED[$idx]:-0}" -eq 1 ]]
+}
+
+# Set the selection state (1 or 0) for a module ID. Returns 1 for unknown IDs.
+set_module_selected() {
+    local id="$1" val="$2" idx
+    idx="$(module_index "$id")" || return 1
+    MODULE_SELECTED[idx]="$val"
+}

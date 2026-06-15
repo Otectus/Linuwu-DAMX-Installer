@@ -176,10 +176,15 @@ add_grub_params() {
             local updated="$new_params $current"
             # Use awk for safe replacement (no sed delimiter issues)
             local tmpfile
-            tmpfile="$(mktemp)"
-            run_sudo awk -v val="$updated" '/^GRUB_CMDLINE_LINUX_DEFAULT=/{print "GRUB_CMDLINE_LINUX_DEFAULT=\"" val "\""; next} {print}' \
-                /etc/default/grub > "$tmpfile" && run_sudo mv "$tmpfile" /etc/default/grub
-            run_sudo grub-mkconfig -o /boot/grub/grub.cfg
+            tmpfile="$(mktemp)" || { warn "Failed to create temp file; skipping GRUB update."; return 1; }
+            if run_sudo awk -v val="$updated" '/^GRUB_CMDLINE_LINUX_DEFAULT=/{print "GRUB_CMDLINE_LINUX_DEFAULT=\"" val "\""; next} {print}' \
+                /etc/default/grub > "$tmpfile" && run_sudo mv "$tmpfile" /etc/default/grub; then
+                run_sudo grub-mkconfig -o /boot/grub/grub.cfg
+            else
+                warn "Failed to update GRUB configuration; left unchanged."
+                rm -f "$tmpfile"
+                return 1
+            fi
         fi
     elif [[ -d /boot/loader/entries ]]; then
         log "systemd-boot detected. Please manually add these kernel parameters:"
@@ -209,10 +214,15 @@ remove_grub_params() {
                 updated=$(echo "$updated" | sed "s|$p||g" | tr -s ' ')
             done
             local tmpfile
-            tmpfile="$(mktemp)"
-            run_sudo awk -v val="$updated" '/^GRUB_CMDLINE_LINUX_DEFAULT=/{print "GRUB_CMDLINE_LINUX_DEFAULT=\"" val "\""; next} {print}' \
-                /etc/default/grub > "$tmpfile" && run_sudo mv "$tmpfile" /etc/default/grub
-            run_sudo grub-mkconfig -o /boot/grub/grub.cfg
+            tmpfile="$(mktemp)" || { warn "Failed to create temp file; skipping GRUB update."; return 1; }
+            if run_sudo awk -v val="$updated" '/^GRUB_CMDLINE_LINUX_DEFAULT=/{print "GRUB_CMDLINE_LINUX_DEFAULT=\"" val "\""; next} {print}' \
+                /etc/default/grub > "$tmpfile" && run_sudo mv "$tmpfile" /etc/default/grub; then
+                run_sudo grub-mkconfig -o /boot/grub/grub.cfg
+            else
+                warn "Failed to update GRUB configuration; left unchanged."
+                rm -f "$tmpfile"
+                return 1
+            fi
         fi
     fi
 }

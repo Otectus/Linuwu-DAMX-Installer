@@ -18,6 +18,17 @@ module_check_installed() {
     has_cmd envycontrol
 }
 
+# Remove the no-op mkinitcpio shim and restore any original wrapper. Safe to
+# call repeatedly; used both on the happy path and from a RETURN trap so the
+# shim is never left behind if envycontrol fails or is interrupted.
+_gpu_restore_mkinitcpio() {
+    local shim_path="$1" had_existing="$2"
+    run_sudo rm -f "$shim_path"
+    if [[ "$had_existing" -eq 1 ]] && [[ -f "$shim_path.archer-bak" ]]; then
+        run_sudo mv "$shim_path.archer-bak" "$shim_path"
+    fi
+}
+
 module_install() {
     # Ensure NVIDIA driver is installed
     if ! pacman -Qi nvidia &>/dev/null && ! pacman -Qi nvidia-dkms &>/dev/null; then
@@ -29,7 +40,7 @@ module_install() {
     # Install EnvyControl
     if [[ -n "$AUR_HELPER" ]]; then
         log "Installing EnvyControl via $AUR_HELPER..."
-        run $AUR_HELPER -S --needed --noconfirm envycontrol
+        run "$AUR_HELPER" -S --needed --noconfirm envycontrol
     else
         log "No AUR helper found. Installing EnvyControl via pip..."
         run pip install envycontrol --break-system-packages 2>/dev/null || warn "pip install encountered issues."
@@ -67,18 +78,19 @@ module_install() {
 exit 0
 SHIM
     run_sudo chmod 755 "$_shim_path"
+    # Guarantee the shim is removed and any original wrapper restored even if
+    # envycontrol exits non-zero or the function returns early.
+    trap '_gpu_restore_mkinitcpio "$_shim_path" "$_had_existing"' RETURN
 
     if [[ "$gpu_mode" = "hybrid" ]]; then
-        run_sudo envycontrol -s hybrid --rtd3 2
+        run_sudo envycontrol -s hybrid --rtd3 2 || { warn "envycontrol failed to set hybrid mode."; return 1; }
     else
-        run_sudo envycontrol -s "$gpu_mode"
+        run_sudo envycontrol -s "$gpu_mode" || { warn "envycontrol failed to set $gpu_mode mode."; return 1; }
     fi
 
-    # Restore original wrapper or remove shim
-    run_sudo rm -f "$_shim_path"
-    if [[ "$_had_existing" -eq 1 ]]; then
-        run_sudo mv "$_shim_path.archer-bak" "$_shim_path"
-    fi
+    # Restore original wrapper now (clear the trap so it doesn't run twice).
+    _gpu_restore_mkinitcpio "$_shim_path" "$_had_existing"
+    trap - RETURN
 
     # Now rebuild initramfs properly (single preset, with timeout, bypasses wrapper)
     rebuild_initramfs
@@ -100,13 +112,12 @@ module_uninstall() {
         fi
         printf '#!/bin/sh\nexit 0\n' | run_sudo tee "$_shim_path" > /dev/null
         run_sudo chmod 755 "$_shim_path"
+        trap '_gpu_restore_mkinitcpio "$_shim_path" "$_had_existing"' RETURN
 
         run_sudo envycontrol --reset 2>/dev/null || true
 
-        run_sudo rm -f "$_shim_path"
-        if [[ "$_had_existing" -eq 1 ]]; then
-            run_sudo mv "$_shim_path.archer-bak" "$_shim_path"
-        fi
+        _gpu_restore_mkinitcpio "$_shim_path" "$_had_existing"
+        trap - RETURN
 
         rebuild_initramfs
     fi
