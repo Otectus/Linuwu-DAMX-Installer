@@ -24,7 +24,9 @@ module_check_installed() {
 
 module_install() {
     # Verify all source files exist before any sudo write so a partial install
-    # doesn't leave the system in a broken state.
+    # doesn't leave the system in a broken state. Fail the MODULE (warn +
+    # return 1) rather than calling error(): error exits the whole sourced
+    # installer, bypassing install.sh's per-module rollback path.
     local _required=(
         "$SCRIPT_DIR/gui/archer_daemon.py"
         "$SCRIPT_DIR/gui/archer_dbus.py"
@@ -38,10 +40,10 @@ module_install() {
     )
     local _src
     for _src in "${_required[@]}"; do
-        [[ -f "$_src" ]] || error "Required GUI source file missing: $_src"
+        [[ -f "$_src" ]] || { warn "Required GUI source file missing: $_src"; return 1; }
     done
-    [[ -d "$SCRIPT_DIR/gui/archer" ]] || error "Required GUI package directory missing: $SCRIPT_DIR/gui/archer"
-    [[ -d "$SCRIPT_DIR/gui/assets" ]] || error "Required GUI assets directory missing: $SCRIPT_DIR/gui/assets"
+    [[ -d "$SCRIPT_DIR/gui/archer" ]] || { warn "Required GUI package directory missing: $SCRIPT_DIR/gui/archer"; return 1; }
+    [[ -d "$SCRIPT_DIR/gui/assets" ]] || { warn "Required GUI assets directory missing: $SCRIPT_DIR/gui/assets"; return 1; }
 
     # Install dependencies
     log "Installing GUI dependencies..."
