@@ -355,9 +355,12 @@ class ArcherDBusService(dbus.service.Object):
     def SetModprobeParameter(self, param, sender=None):
         if not self._authorize("set_modprobe_parameter", sender):
             return self._json_response({"success": False, "error": "Authorization denied"})
-        if param not in ("nitro_v4", "predator_v4", "enable_all"):
+        if param not in ("nitro_v4", "predator_v4"):
             return self._json_response({"success": False, "error": f"Invalid parameter: {param}"})
-        ok = self.hw.set_modprobe_parameter(param)
+        try:
+            ok = self.hw.set_modprobe_parameter(param)
+        except OSError as e:
+            return self._json_response({"success": False, "error": str(e)})
         return self._json_response({"success": ok})
 
     @dbus.service.method(DBUS_IFACE, in_signature="", out_signature="s",
@@ -365,7 +368,10 @@ class ArcherDBusService(dbus.service.Object):
     def RemoveModprobeParameter(self, sender=None):
         if not self._authorize("remove_modprobe_parameter", sender):
             return self._json_response({"success": False, "error": "Authorization denied"})
-        ok = self.hw.remove_modprobe_parameter()
+        try:
+            ok = self.hw.remove_modprobe_parameter()
+        except OSError as e:
+            return self._json_response({"success": False, "error": str(e)})
         return self._json_response({"success": ok})
 
     @dbus.service.method(DBUS_IFACE, in_signature="", out_signature="s",

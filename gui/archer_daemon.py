@@ -139,7 +139,11 @@ _HWMON_FAN_NAMES = (
     "linuwu_sense", "acer_wmi", "nct6775", "nct6779", "nct6798",
     "it87", "dell_smm_hwmon",
 )
+# Discrete-GPU hwmon names — the flat get_gpu_temp() reports the discrete GPU.
 _HWMON_GPU_TEMP_NAMES = ("nvidia", "amdgpu", "nouveau")
+# Intel integrated-GPU hwmon names. Consulted only for per-GPU telemetry so the
+# flat discrete reading is never shadowed by the iGPU. Absent on most laptops.
+_HWMON_IGPU_TEMP_NAMES = ("i915", "xe")
 
 
 # --- Persistent Settings Store ---
@@ -315,6 +319,9 @@ class HardwareManager:
         )
         self._detect_driver()
         self._detect_laptop_type()
+        if self._maybe_autoforce_v4():
+            logger.info("Reloading driver with forced quirk; daemon will restart")
+            return
         self._detect_features()
         logger.info(f"Laptop type: {self.laptop_type}")
         logger.info(f"Driver base: {self.driver_base}")
@@ -349,6 +356,43 @@ class HardwareManager:
                 self.laptop_type = "nitro"
             elif "triton" in product_lower:
                 self.laptop_type = "predator"
+
+    def _maybe_autoforce_v4(self):
+        """Self-heal fan/RGB control on DMI-unmatched gaming Acer models.
+
+        Linuwu-Sense gates the nitro_sense/predator_sense sysfs groups (which
+        expose fan_speed) behind a DMI quirk table. Newer models — e.g. the
+        Nitro ANV16S-41, which the table only knows as "Nitro ANV16-41" — fail
+        the substring match, so the driver loads as bare acer_wmi with no sense
+        interface ("Sense base: None"). The module's nitro_v4/predator_v4
+        params force-select the v4 quirk regardless of DMI, so write the
+        matching param and reload once. Returns True if a reload was triggered.
+        """
+        if not self.driver_base or self.sense_base:
+            return False
+        if self.laptop_type == "nitro":
+            param = "nitro_v4"
+        elif self.laptop_type == "predator":
+            param = "predator_v4"
+        else:
+            return False
+        conf = Path("/etc/modprobe.d/linuwu-sense.conf")
+        # Loop guard: if the param is already set and the interface STILL did
+        # not appear, the model is genuinely unsupported — don't restart-loop.
+        if conf.exists() and param in conf.read_text():
+            logger.warning(
+                f"{param} already set but {self.laptop_type}_sense still "
+                "absent; model may be unsupported by linuwu_sense")
+            return False
+        logger.info(
+            f"No sense interface for {self.laptop_type} model; forcing "
+            f"{param} and reloading driver")
+        try:
+            self.set_modprobe_parameter(param)
+        except OSError:
+            return False
+        self.restart_drivers_and_daemon()
+        return True
 
     def _detect_features(self):
         self.features = []
@@ -684,25 +728,38 @@ class HardwareManager:
         val = read_sysfs("/sys/class/thermal/thermal_zone0/temp")
         return int(val) // 1000 if val else 0
 
+    def _nvidia_smi_temp_util(self):
+        """Return (temp, usage) for the NVIDIA GPU via a single cached
+        nvidia-smi query, or (None, None) when unavailable. Querying both in
+        one call halves the spawns of a slow, sometimes-hanging binary."""
+        raw = _PROBE_CACHE.get_or_compute(
+            "nvidia-smi-temp-util",
+            lambda: run_cmd(
+                "nvidia-smi --query-gpu=temperature.gpu,utilization.gpu "
+                "--format=csv,noheader,nounits 2>/dev/null",
+                timeout=3, shell_meta_ok=True,
+            ),
+        )
+        if not raw:
+            return None, None
+        # First GPU line, e.g. "55, 48".
+        parts = [p.strip() for p in raw.splitlines()[0].split(",")]
+        if len(parts) < 2:
+            return None, None
+        temp = int(parts[0]) if parts[0].isdigit() else None
+        usage = int(parts[1]) if parts[1].isdigit() else None
+        return temp, usage
+
     def get_gpu_temp(self):
-        """Get GPU temperature from hwmon."""
+        """Get discrete GPU temperature from hwmon, falling back to nvidia-smi."""
         for hwmon in sorted(Path("/sys/class/hwmon").glob("hwmon*")):
             name = read_sysfs(hwmon / "name")
             if name and name.lower() in _HWMON_GPU_TEMP_NAMES:
                 val = read_sysfs(hwmon / "temp1_input")
                 if val:
                     return int(val) // 1000
-        # Try nvidia-smi (cached; the binary is slow, sometimes hangs)
-        temp = _PROBE_CACHE.get_or_compute(
-            "nvidia-smi-temp",
-            lambda: run_cmd(
-                "nvidia-smi --query-gpu=temperature.gpu --format=csv,noheader,nounits 2>/dev/null",
-                timeout=3, shell_meta_ok=True,
-            ),
-        )
-        if temp and temp.isdigit():
-            return int(temp)
-        return 0
+        temp, _ = self._nvidia_smi_temp_util()
+        return temp if temp is not None else 0
 
     def get_cpu_usage(self):
         """Get CPU usage percentage."""
@@ -714,25 +771,54 @@ class HardwareManager:
         return int(usage) if usage and usage.isdigit() else 0
 
     def get_gpu_usage(self):
-        """Get GPU usage from nvidia-smi or amdgpu."""
-        # NVIDIA (cached)
-        val = _PROBE_CACHE.get_or_compute(
-            "nvidia-smi-util",
-            lambda: run_cmd(
-                "nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null",
-                timeout=3, shell_meta_ok=True,
-            ),
-        )
-        if val and val.isdigit():
-            return int(val)
-        # AMD
+        """Get discrete GPU usage from nvidia-smi or amdgpu."""
+        _, usage = self._nvidia_smi_temp_util()
+        if usage is not None:
+            return usage
+        usage = self._amdgpu_usage()
+        return usage if usage is not None else 0
+
+    def _amdgpu_usage(self):
+        """Return amdgpu busy percent, or None if no amdgpu hwmon present."""
         for hwmon in Path("/sys/class/hwmon").glob("hwmon*"):
             name = read_sysfs(hwmon / "name")
             if name and name.lower() == "amdgpu":
                 val = read_sysfs(hwmon / "device/gpu_busy_percent")
                 if val:
                     return int(val)
-        return 0
+        return None
+
+    def _hwmon_temp_by_names(self, names):
+        """Return temp1_input (in C) of the first hwmon matching `names`, or
+        None. Used for per-GPU telemetry probing."""
+        for hwmon in sorted(Path("/sys/class/hwmon").glob("hwmon*")):
+            name = read_sysfs(hwmon / "name")
+            if name and name.lower() in names:
+                val = read_sysfs(hwmon / "temp1_input")
+                if val:
+                    return int(val) // 1000
+        return None
+
+    def _per_gpu_telemetry(self):
+        """Per-GPU live metrics aligned to _detect_gpus() order. Each entry is
+        {vendor, temp, usage} with None where no sensor is available."""
+        result = []
+        for gpu in self._detect_gpus():
+            vendor = gpu.get("vendor")
+            temp = usage = None
+            if vendor == "nvidia":
+                temp, usage = self._nvidia_smi_temp_util()
+                if temp is None:
+                    temp = self._hwmon_temp_by_names(("nvidia", "nouveau"))
+            elif vendor == "amd":
+                temp = self._hwmon_temp_by_names(("amdgpu",))
+                usage = self._amdgpu_usage()
+            elif vendor == "intel":
+                # Intel iGPUs rarely expose a hwmon; usage needs intel_gpu_top
+                # (root, expensive) so it's left unavailable.
+                temp = self._hwmon_temp_by_names(_HWMON_IGPU_TEMP_NAMES)
+            result.append({"vendor": vendor, "temp": temp, "usage": usage})
+        return result
 
     def get_fan_rpm(self):
         """Get fan RPM from hwmon. Prefer Acer-relevant chipsets by name."""
@@ -772,6 +858,58 @@ class HardwareManager:
                 return online == "1"
         return True  # Default to AC if unknown
 
+    def _detect_gpus(self):
+        """Detect all GPUs via lspci. Returns an ordered list of
+        {vendor, model, kind} dicts, discrete GPU(s) first so index 0 aligns
+        with the flat nvidia-smi telemetry. Cached via _PROBE_CACHE."""
+        return _PROBE_CACHE.get_or_compute("lspci-gpus", self._parse_gpus)
+
+    @staticmethod
+    def _parse_gpus():
+        import shlex
+        # -mm is machine-readable: `Slot "Class" "Vendor" "Device" -rRev ...`
+        out = run_cmd("lspci -mm 2>/dev/null", shell_meta_ok=True)
+        gpus = []
+        for line in (out or "").splitlines():
+            try:
+                fields = shlex.split(line)
+            except ValueError:
+                continue
+            if len(fields) < 4:
+                continue
+            slot, cls, vendor_s, device = fields[:4]
+            if not any(k in cls.lower() for k in ("vga", "3d", "display")):
+                continue
+            low = f"{vendor_s} {device}".lower()
+            # Check intel/nvidia before amd: a bare "ati" substring would
+            # otherwise match "CorporATIon" and misroute Intel/NVIDIA GPUs.
+            if "nvidia" in low:
+                vendor, kind = "nvidia", "discrete"
+            elif "intel" in low:
+                vendor, kind = "intel", "integrated"
+            elif "amd" in low or "advanced micro" in low or "radeon" in low:
+                vendor = "amd"
+                kind = "integrated" if slot.startswith("00:") else "discrete"
+            else:
+                vendor = "unknown"
+                kind = "integrated" if slot.startswith("00:") else "discrete"
+            gpus.append({
+                "vendor": vendor,
+                "model": f"{vendor_s} {device}".strip(),
+                "kind": kind,
+            })
+        # Discrete first; stable for entries sharing a kind.
+        gpus.sort(key=lambda g: 0 if g["kind"] == "discrete" else 1)
+        if not gpus:
+            # Legacy fallback so odd hardware never regresses to "no GPU".
+            legacy = run_cmd(
+                "lspci 2>/dev/null | grep -iE 'vga|3d' | head -1 | sed 's/.*: //'",
+                shell_meta_ok=True,
+            )
+            if legacy:
+                gpus = [{"vendor": "unknown", "model": legacy, "kind": ""}]
+        return gpus
+
     def get_system_info(self):
         """Get general system information."""
         product = read_sysfs(DMI_PRODUCT) or "Unknown"
@@ -785,13 +923,10 @@ class HardwareManager:
                         break
         except OSError:
             pass
-        gpu_model = _PROBE_CACHE.get_or_compute(
-            "lspci-gpu",
-            lambda: run_cmd(
-                "lspci 2>/dev/null | grep -iE 'vga|3d' | head -1 | sed 's/.*: //'",
-                shell_meta_ok=True,
-            ),
-        )
+        gpus = self._detect_gpus()
+        # Keep the flat gpu_model for back-compat (System page, hero). Discrete
+        # is ordered first, so this now matches the flat nvidia-smi telemetry.
+        gpu_model = gpus[0]["model"] if gpus else "Unknown"
         driver_version = read_sysfs(
             os.path.join(self.driver_base, "version") if self.driver_base else "/dev/null"
         ) or "N/A"
@@ -800,6 +935,7 @@ class HardwareManager:
             "vendor": vendor,
             "cpu_model": cpu_model,
             "gpu_model": gpu_model,
+            "gpus": gpus,
             "laptop_type": self.laptop_type,
             "driver_version": driver_version,
             "daemon_version": VERSION,
@@ -844,6 +980,7 @@ class HardwareManager:
             "gpu_temp": self.get_gpu_temp(),
             "cpu_usage": self.get_cpu_usage(),
             "gpu_usage": self.get_gpu_usage(),
+            "gpus": self._per_gpu_telemetry(),
             "fan_rpm_cpu": cpu_rpm,
             "fan_rpm_gpu": gpu_rpm,
             "battery_info": self.get_battery_info(),
@@ -1086,22 +1223,28 @@ class HardwareManager:
         )
 
     def set_modprobe_parameter(self, param):
-        """Set a permanent modprobe parameter for linuwu_sense."""
+        """Set a permanent modprobe parameter for linuwu_sense.
+
+        Raises OSError on failure (e.g. the systemd sandbox blocking the
+        write) so the D-Bus layer can surface the real reason to the GUI
+        instead of an opaque "request refused".
+        """
         conf = "/etc/modprobe.d/linuwu-sense.conf"
         try:
             Path(conf).write_text(f"options linuwu_sense {param}=1\n")
             return True
         except OSError as e:
             logger.error(f"Failed to write modprobe config: {e}")
-            return False
+            raise
 
     def remove_modprobe_parameter(self):
         conf = "/etc/modprobe.d/linuwu-sense.conf"
         try:
             Path(conf).unlink(missing_ok=True)
             return True
-        except OSError:
-            return False
+        except OSError as e:
+            logger.error(f"Failed to remove modprobe config: {e}")
+            raise
 
     def force_driver_parameter(self, param):
         """Force a one-time driver parameter reload."""

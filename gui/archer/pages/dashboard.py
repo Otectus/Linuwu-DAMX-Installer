@@ -146,8 +146,8 @@ class DashboardPage(Gtk.Box):
         # --- 1. CPU Card ---
         self._build_cpu_card(outer)
 
-        # --- 2. GPU Card ---
-        self._build_gpu_card(outer)
+        # --- 2. GPU Section (one card per detected GPU) ---
+        self._build_gpu_section(outer)
 
         # --- 3. Fan Status Card ---
         self._build_fan_card(outer)
@@ -179,24 +179,63 @@ class DashboardPage(Gtk.Box):
         parent.append(card)
 
     # ---- GPU ----
-    def _build_gpu_card(self, parent):
-        card, content = _make_card("GPU")
+    def _build_gpu_section(self, parent):
+        """Container for per-GPU cards. Cards are (re)built in load_settings
+        once the detected GPU list is known (this runs before any data)."""
+        self.gpu_section = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16)
+        parent.append(self.gpu_section)
+        self._gpu_cards = []        # one refs dict per rendered card
+        self._gpus_built_key = None  # signature of the gpus list last built
 
-        self.gpu_model_label = Gtk.Label(label="--", xalign=0, wrap=True)
-        self.gpu_model_label.add_css_class("dim-label")
-        content.append(self.gpu_model_label)
+    def _build_one_gpu_card(self, gpu):
+        """Build a single GPU card. Returns (card_widget, refs_dict)."""
+        kind = gpu.get("kind") or ""
+        title = f"GPU ({kind.capitalize()})" if kind else "GPU"
+        card, content = _make_card(title)
 
-        row_temp, self.gpu_temp_label, self.gpu_temp_bar = _make_metric_row(
-            "Temperature", TEMP_MAX
+        model_label = Gtk.Label(
+            label=gpu.get("model", "Unknown GPU"), xalign=0, wrap=True
         )
+        model_label.add_css_class("dim-label")
+        content.append(model_label)
+
+        row_temp, temp_label, temp_bar = _make_metric_row("Temperature", TEMP_MAX)
         content.append(row_temp)
-
-        row_usage, self.gpu_usage_label, self.gpu_usage_bar = _make_metric_row(
-            "Usage", USAGE_MAX
-        )
+        row_usage, usage_label, usage_bar = _make_metric_row("Usage", USAGE_MAX)
         content.append(row_usage)
 
-        parent.append(card)
+        return card, {
+            "vendor": gpu.get("vendor", "unknown"),
+            "temp_label": temp_label, "temp_bar": temp_bar,
+            "usage_label": usage_label, "usage_bar": usage_bar,
+        }
+
+    def _rebuild_gpu_cards(self, system):
+        """(Re)build GPU cards from system_info. Idempotent — only rebuilds
+        when the detected GPU set actually changes."""
+        gpus = system.get("gpus")
+        if not gpus:
+            # Back-compat: synthesize a single card from the flat gpu_model.
+            gpus = [{"vendor": "unknown",
+                     "model": system.get("gpu_model", "Unknown GPU"),
+                     "kind": ""}]
+
+        key = tuple((g.get("vendor"), g.get("model"), g.get("kind")) for g in gpus)
+        if key == self._gpus_built_key:
+            return
+        self._gpus_built_key = key
+
+        child = self.gpu_section.get_first_child()
+        while child is not None:
+            nxt = child.get_next_sibling()
+            self.gpu_section.remove(child)
+            child = nxt
+        self._gpu_cards = []
+
+        for gpu in gpus:
+            card, refs = self._build_one_gpu_card(gpu)
+            self.gpu_section.append(card)
+            self._gpu_cards.append(refs)
 
     # ---- Fans ----
     def _build_fan_card(self, parent):
@@ -398,7 +437,7 @@ class DashboardPage(Gtk.Box):
         self.hero.load_settings(data)
         system = data.get("system_info", {})
         self.cpu_model_label.set_label(system.get("cpu_model", "Unknown CPU"))
-        self.gpu_model_label.set_label(system.get("gpu_model", "Unknown GPU"))
+        self._rebuild_gpu_cards(system)
 
         # Battery
         bat = data.get("battery_info", {})
@@ -432,15 +471,19 @@ class DashboardPage(Gtk.Box):
         self.cpu_usage_label.set_label(f"{cpu_usage:.0f}%")
         self.cpu_usage_bar.set_value(min(cpu_usage, USAGE_MAX))
 
-        # GPU
+        # GPU(s)
         gpu_temp = data.get("gpu_temp", 0)
-        gpu_usage = data.get("gpu_usage", 0)
-        self.gpu_temp_label.set_label(f"{gpu_temp:.0f} \u00b0C")
-        self.gpu_temp_bar.set_value(min(gpu_temp, TEMP_MAX))
-        _apply_temp_class(self.gpu_temp_bar, gpu_temp)
-
-        self.gpu_usage_label.set_label(f"{gpu_usage:.0f}%")
-        self.gpu_usage_bar.set_value(min(gpu_usage, USAGE_MAX))
+        gpus_tel = data.get("gpus")
+        if gpus_tel is not None and self._gpu_cards:
+            # Daemon emits gpus in the same (discrete-first) order as
+            # system_info, so index-align; fall back to a vendor match.
+            for idx, refs in enumerate(self._gpu_cards):
+                self._apply_gpu_card(refs, self._match_gpu_tel(gpus_tel, refs["vendor"], idx))
+        elif self._gpu_cards:
+            # Back-compat: single card from the flat fields.
+            self._apply_gpu_card(self._gpu_cards[0],
+                                 {"temp": data.get("gpu_temp"),
+                                  "usage": data.get("gpu_usage")})
 
         # Fans
         cpu_rpm = data.get("fan_rpm_cpu", 0)
@@ -461,6 +504,36 @@ class DashboardPage(Gtk.Box):
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+    @staticmethod
+    def _match_gpu_tel(gpus_tel, vendor, idx):
+        """Find the telemetry entry for a card by vendor, falling back to the
+        positional entry."""
+        for g in gpus_tel:
+            if g.get("vendor") == vendor:
+                return g
+        return gpus_tel[idx] if idx < len(gpus_tel) else {}
+
+    @staticmethod
+    def _apply_gpu_card(refs, tel):
+        """Apply a {temp, usage} telemetry dict to one GPU card's widgets.
+        None values (no sensor) render as 'N/A' with the bar at zero."""
+        temp = tel.get("temp")
+        usage = tel.get("usage")
+        if temp is None:
+            refs["temp_label"].set_label("N/A")
+            refs["temp_bar"].set_value(0)
+            _apply_temp_class(refs["temp_bar"], 0)
+        else:
+            refs["temp_label"].set_label(f"{temp:.0f} °C")
+            refs["temp_bar"].set_value(min(temp, TEMP_MAX))
+            _apply_temp_class(refs["temp_bar"], temp)
+        if usage is None:
+            refs["usage_label"].set_label("N/A")
+            refs["usage_bar"].set_value(0)
+        else:
+            refs["usage_label"].set_label(f"{usage:.0f}%")
+            refs["usage_bar"].set_value(min(usage, USAGE_MAX))
+
     def _update_battery(self, bat):
         pct = bat.get("percentage", 0)
         status = bat.get("status", "--")

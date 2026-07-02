@@ -21,13 +21,17 @@ ProtectSystem=full
 ProtectHome=read-only
 PrivateTmp=true
 
-# Daemon must persist user settings under /etc/archer/. ProtectSystem=full
-# would otherwise make /etc read-only.
-ReadWritePaths=/etc/archer
+# ProtectSystem=full makes /etc read-only, so every path the daemon writes
+# in-process must be carved out here:
+#   /etc/archer      — persisted user settings (settings.json)
+#   /etc/modprobe.d  — the linuwu-sense modprobe override the Internals page
+#                      writes/removes (set_modprobe_parameter)
+ReadWritePaths=/etc/archer /etc/modprobe.d
 
-# Additional sandboxing. The daemon only reads/writes /sys + /etc/archer and
-# shells out to system tools (and triggers modprobe via systemd-run transient
-# units, not in-process), so these restrictions don't remove needed function.
+# Additional sandboxing. The daemon reads/writes /sys, /etc/archer and
+# /etc/modprobe.d, and shells out to system tools (it triggers modprobe via
+# systemd-run transient units, not in-process), so these restrictions don't
+# remove needed function.
 ProtectClock=true
 ProtectHostname=true
 ProtectKernelLogs=true

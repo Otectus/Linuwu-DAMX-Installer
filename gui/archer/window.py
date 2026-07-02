@@ -26,6 +26,7 @@ import threading
 from archer.client import ArcherClient
 from archer.widgets import status as status_mod
 from archer.widgets.status_footer import StatusFooter
+from archer.widgets.toast import make_toast
 
 logger = logging.getLogger("archer-gui")
 from archer.pages.dashboard import DashboardPage
@@ -292,7 +293,7 @@ class ArcherWindow(Adw.ApplicationWindow):
             # Surface the underlying init error in a toast (one per failure)
             err = self.client.init_error
             if err:
-                self.add_toast(Adw.Toast.new(f"Daemon offline: {err}"))
+                self.add_toast(make_toast(f"Daemon offline: {err}"))
 
             # Retry with exponential backoff
             delay = self._reconnect_steps_s[
@@ -338,7 +339,7 @@ class ArcherWindow(Adw.ApplicationWindow):
                 )
             except Exception as e:
                 self.add_toast(
-                    Adw.Toast.new(f"Telemetry signal unavailable: {e}")
+                    make_toast(f"Telemetry signal unavailable: {e}")
                 )
             try:
                 self._audio_signal_match = iface.connect_to_signal(
@@ -346,6 +347,16 @@ class ArcherWindow(Adw.ApplicationWindow):
                 )
             except Exception as e:
                 logger.warning(f"AudioEnhancementChanged subscribe failed: {e}")
+
+        # Prime the dashboard immediately rather than waiting up to one daemon
+        # push interval (~2s) for the first signal. The call is a blocking
+        # D-Bus round-trip (may spawn nvidia-smi), so run it off the main
+        # thread and marshal the UI update back via idle_add.
+        def _prime():
+            data = self.client.get_monitoring_data()
+            if data:
+                GLib.idle_add(self.dashboard_page.update_monitoring, data)
+        threading.Thread(target=_prime, daemon=True).start()
 
         # Mark "fresh" so the first stale-check tick after subscribe doesn't
         # immediately flip to "Stale".
@@ -385,13 +396,13 @@ class ArcherWindow(Adw.ApplicationWindow):
         except Exception as e:
             logger.warning(f"pipewire restart failed: {e}")
             self.add_toast(
-                Adw.Toast.new(f"Could not restart pipewire: {e}")
+                make_toast(f"Could not restart pipewire: {e}")
             )
             return
         msg = ("Noise suppression enabled — restarting pipewire."
                if enabled else
                "Noise suppression disabled — restarting pipewire.")
-        self.add_toast(Adw.Toast.new(msg))
+        self.add_toast(make_toast(msg))
 
     def _check_staleness(self):
         """Flip the status label to 'Stale' if no signal for STALE_AFTER_S."""

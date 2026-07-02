@@ -10,6 +10,7 @@ from gi.repository import Gtk, Adw
 from archer.widgets.async_set import async_set
 from archer.widgets.confirm import confirm_action
 from archer.widgets.capability_row import set_group_supported
+from archer.widgets.toast import make_toast
 
 
 _GPU_MODES = [
@@ -169,7 +170,7 @@ class DisplayPage(Gtk.Box):
     def _toast(self, message):
         win = self.get_root()
         if win is not None and hasattr(win, "add_toast"):
-            win.add_toast(Adw.Toast.new(message))
+            win.add_toast(make_toast(message))
 
     def _on_mode_selected(self, button, mode_key):
         """Confirm, then switch GPU display mode (requires a reboot)."""

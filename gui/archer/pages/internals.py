@@ -9,6 +9,7 @@ from gi.repository import Gtk, Adw
 
 from archer.widgets.async_set import async_set
 from archer.widgets.confirm import confirm_action
+from archer.widgets.toast import make_toast
 
 
 class InternalsPage(Gtk.Box):
@@ -52,10 +53,6 @@ class InternalsPage(Gtk.Box):
         btn_predator.connect("clicked", self._on_force_predator)
         onetime_buttons.append(btn_predator)
 
-        btn_all = Gtk.Button(label="Enable All Features")
-        btn_all.connect("clicked", self._on_force_enable_all)
-        onetime_buttons.append(btn_all)
-
         onetime_row = Adw.PreferencesRow()
         onetime_inner = Gtk.Box(
             orientation=Gtk.Orientation.VERTICAL,
@@ -77,7 +74,6 @@ class InternalsPage(Gtk.Box):
             "Disabled",
             "Force Nitro Model (nitro_v4)",
             "Force Predator Model (predator_v4)",
-            "Force Enable All (enable_all)",
         ])
         self.override_combo.set_model(override_model)
         self.override_combo.set_selected(0)
@@ -173,13 +169,9 @@ class InternalsPage(Gtk.Box):
         self._send(self.client.set_modprobe_parameter, ("predator_v4",),
                    "Loading with predator_v4 parameter…")
 
-    def _on_force_enable_all(self, button):
-        self._send(self.client.set_modprobe_parameter, ("enable_all",),
-                   "Loading with enable_all parameter…")
-
     def _on_apply_override(self, button):
         idx = self.override_combo.get_selected()
-        params = [None, "nitro_v4", "predator_v4", "enable_all"]
+        params = [None, "nitro_v4", "predator_v4"]
         if idx == 0:
             self._send(self.client.remove_modprobe_parameter, (), "Override removed.")
         else:
@@ -207,5 +199,4 @@ class InternalsPage(Gtk.Box):
         """Show a toast notification in the window."""
         window = self.get_root()
         if window and hasattr(window, "add_toast"):
-            toast = Adw.Toast(title=message, timeout=3)
-            window.add_toast(toast)
+            window.add_toast(make_toast(message, timeout=3))

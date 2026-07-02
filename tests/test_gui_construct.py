@@ -45,6 +45,12 @@ FAKE_SETTINGS = {
     "power_source_ac": True,
     "system_info": {"product_name": "Nitro AN515", "vendor": "Acer",
                     "cpu_model": "AMD Ryzen 7", "gpu_model": "NVIDIA RTX",
+                    "gpus": [
+                        {"vendor": "nvidia", "model": "NVIDIA RTX 4050",
+                         "kind": "discrete"},
+                        {"vendor": "intel", "model": "Intel UHD 770",
+                         "kind": "integrated"},
+                    ],
                     "laptop_type": "nitro", "driver_version": "1.0",
                     "daemon_version": "test", "kernel": "6.12.0"},
     "fan_curve": {"cpu": {"enabled": False, "points": []},
@@ -59,6 +65,10 @@ FAKE_SETTINGS = {
 
 FAKE_TELEMETRY = {
     "cpu_temp": 55, "gpu_temp": 48, "cpu_usage": 12, "gpu_usage": 4,
+    "gpus": [
+        {"vendor": "nvidia", "temp": 48, "usage": 4},
+        {"vendor": "intel", "temp": None, "usage": None},
+    ],
     "fan_rpm_cpu": 2000, "fan_rpm_gpu": 2200,
     "battery_info": {"present": True, "percentage": 80, "status": "Charging"},
     "power_source_ac": True,

@@ -9,6 +9,7 @@ from gi.repository import Gtk, Adw
 
 from archer.widgets.async_set import async_set
 from archer.widgets.capability_row import set_group_supported
+from archer.widgets.toast import make_toast
 
 
 class GameModePage(Gtk.Box):
@@ -129,7 +130,7 @@ class GameModePage(Gtk.Box):
     def _toast(self, message):
         win = self.get_root()
         if win is not None and hasattr(win, "add_toast"):
-            win.add_toast(Adw.Toast.new(message))
+            win.add_toast(make_toast(message))
 
     def _on_toggle_changed(self, switch, *args):
         enabled = switch.get_active()

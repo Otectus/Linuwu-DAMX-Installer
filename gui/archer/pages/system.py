@@ -11,6 +11,7 @@ import subprocess
 
 from archer.widgets.async_set import async_set
 from archer.widgets.capability_row import set_group_supported
+from archer.widgets.toast import make_toast
 
 
 class SystemPage(Gtk.Box):
@@ -203,7 +204,7 @@ class SystemPage(Gtk.Box):
     def _toast(self, message):
         win = self.get_root()
         if win is not None and hasattr(win, "add_toast"):
-            win.add_toast(Adw.Toast.new(message))
+            win.add_toast(make_toast(message))
 
     def _on_check_updates(self, row):
         try:

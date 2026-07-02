@@ -12,6 +12,7 @@ from gi.repository import Gtk, Adw, Gdk
 
 from archer.widgets.async_set import async_set
 from archer.widgets.capability_row import set_group_supported
+from archer.widgets.toast import make_toast
 
 
 # ── helpers ──────────────────────────────────────────────────────────
@@ -266,7 +267,7 @@ class KeyboardPage(Gtk.Box):
     def _toast(self, message):
         win = self.get_root()
         if win is not None and hasattr(win, "add_toast"):
-            win.add_toast(Adw.Toast.new(message))
+            win.add_toast(make_toast(message))
 
     def _on_apply_zones(self, _button):
         # Strip '#' prefix — sysfs expects bare hex like "4287f5"

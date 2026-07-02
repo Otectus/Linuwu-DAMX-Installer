@@ -11,6 +11,7 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gio
 
 from archer.window import ArcherWindow
+from archer.widgets.toast import make_toast
 
 logger = logging.getLogger("archer-gui")
 
@@ -40,6 +41,16 @@ class ArcherApplication(Adw.Application):
 
     def do_startup(self):
         Adw.Application.do_startup(self)
+
+        # Archer ships a hardcoded dark stylesheet (style.css), so state that
+        # preference the libadwaita way. This also silences the startup notice
+        # "Using GtkSettings:gtk-application-prefer-dark-theme with libadwaita
+        # is unsupported" that fires when the environment sets the legacy GTK
+        # dark flag — AdwStyleManager:color-scheme is the supported mechanism.
+        Adw.StyleManager.get_default().set_color_scheme(
+            Adw.ColorScheme.PREFER_DARK
+        )
+
         # Keep the app alive even when all windows are hidden
         self.hold()
 
@@ -66,7 +77,7 @@ class ArcherApplication(Adw.Application):
         if self._tray is None and self._tray_error and not self._tray_warned:
             self._tray_warned = True
             self.window.add_toast(
-                Adw.Toast.new(f"System tray unavailable: {self._tray_error}")
+                make_toast(f"System tray unavailable: {self._tray_error}")
             )
 
     def _on_close_request(self, window):

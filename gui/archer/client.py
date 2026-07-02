@@ -87,6 +87,14 @@ class ArcherClient:
         on self._init_error so the window can surface it."""
         try:
             import dbus
+            from dbus.mainloop.glib import DBusGMainLoop
+            # Signals (TelemetryUpdated) are only dispatched if a main loop is
+            # integrated into the bus connection. This MUST be set as default
+            # before the first SystemBus() is created — dbus-python binds the
+            # connection to whatever loop is default at construction time.
+            # Without it, method calls work but signals are silently dropped,
+            # leaving the dashboard's live gauges stuck at their init values.
+            DBusGMainLoop(set_as_default=True)
             bus = dbus.SystemBus()
             proxy = bus.get_object(DBUS_NAME, DBUS_PATH)
             self._dbus_iface = dbus.Interface(proxy, DBUS_IFACE)

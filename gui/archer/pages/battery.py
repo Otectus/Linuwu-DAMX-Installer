@@ -10,6 +10,7 @@ from gi.repository import Gtk, Adw
 from archer.widgets.async_set import async_set
 from archer.widgets.confirm import confirm_action
 from archer.widgets.capability_row import set_group_supported
+from archer.widgets.toast import make_toast
 
 
 class BatteryPage(Gtk.Box):
@@ -23,7 +24,7 @@ class BatteryPage(Gtk.Box):
         """Show a toast on the parent ArcherWindow if attached."""
         win = self.get_root()
         if win is not None and hasattr(win, "add_toast"):
-            win.add_toast(Adw.Toast.new(message))
+            win.add_toast(make_toast(message))
 
     def _build_ui(self):
         scrolled = Gtk.ScrolledWindow(vexpand=True, hscrollbar_policy=Gtk.PolicyType.NEVER)
