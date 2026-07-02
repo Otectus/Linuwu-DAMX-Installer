@@ -46,6 +46,17 @@ POLKIT_ACTIONS = {
     "remove_modprobe_parameter": "io.otectus.archer1.system-control",
 }
 
+# Commands that intentionally require no polkit action. Today no read-only
+# handler calls _authorize() at all, so this set is defense-in-depth for
+# future callers: _authorize DENIES anything not listed here and not in
+# POLKIT_ACTIONS (fail-closed). tests/test_policy_actions.py enforces that
+# every D-Bus method is either polkit-gated or listed here.
+READ_ONLY_COMMANDS = frozenset({
+    "ping", "get_all_settings", "get_monitoring_data",
+    "get_supported_features", "get_fan_curve", "get_display_mode",
+    "get_game_mode", "get_usb_power_policy", "get_firmware_info",
+})
+
 
 def _check_polkit(bus, sender, action_id):
     """Check polkit authorization for the calling process."""
@@ -86,10 +97,15 @@ class ArcherDBusService(dbus.service.Object):
         return True
 
     def _authorize(self, command, sender):
-        """Check polkit for mutating commands. Returns True if authorized."""
+        """Fail-closed polkit gate: unmapped commands are denied."""
         action_id = POLKIT_ACTIONS.get(command)
-        if not action_id:
-            return True  # Read-only commands need no auth
+        if action_id is None:
+            if command in READ_ONLY_COMMANDS:
+                return True
+            logger.error(
+                f"Denying command '{command}' from {sender}: "
+                f"no polkit action mapped (fail-closed)")
+            return False
         return _check_polkit(self._bus, sender, action_id)
 
     def _json_response(self, data):
