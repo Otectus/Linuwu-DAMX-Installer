@@ -111,9 +111,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
+      # No setup-python here: apt's python3-dbus/python3-gi bind to the
+      # SYSTEM interpreter; a toolcache python shadowing it on PATH makes
+      # 'import dbus' unresolvable.
       - name: Install D-Bus runtime
         run: |
           sudo apt-get update
