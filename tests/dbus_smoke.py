@@ -79,7 +79,13 @@ def _fail(msg):
 
 def main():
     dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
+    # TWO connections, deliberately: libdbus lets only one thread dispatch a
+    # connection, so a blocking client call on the service's own connection
+    # starves the handler that must produce its reply — every call times out
+    # with NoReply. The service lives on the shared connection (dispatched by
+    # the GLib loop); the client talks over its own private connection.
     bus = dbus.SessionBus()
+    client_bus = dbus.bus.BusConnection(dbus.bus.BUS_SESSION)
 
     # Construct the service. Its __init__ calls dbus.SystemBus internally
     # but we patched it above to return a SessionBus connected to the
@@ -94,7 +100,7 @@ def main():
     threading.Thread(target=main_loop.run, daemon=True).start()
 
     try:
-        proxy = bus.get_object(archer_dbus.DBUS_NAME, archer_dbus.DBUS_PATH)
+        proxy = client_bus.get_object(archer_dbus.DBUS_NAME, archer_dbus.DBUS_PATH)
         iface = dbus.Interface(proxy, archer_dbus.DBUS_IFACE)
 
         ping_resp = str(iface.Ping(timeout=5))
