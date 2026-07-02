@@ -1,5 +1,9 @@
 #!/usr/bin/env bats
 # Tests for install.sh — CLI argument parsing and module selection logic
+#
+# NOTE: lib/utils.sh defines a run() function that overwrites Bats' built-in
+# run command (see utils.bats). Never use Bats `run` in this file — capture
+# exit status explicitly: `status=0; cmd || status=$?`.
 
 setup() {
     DRY_RUN=0
@@ -87,7 +91,7 @@ setup() {
     [ "$(module_index driver)" = "0" ]
     [ "$(module_index thermal)" = "7" ]
     [ "$(module_index firmware)" = "$(( ${#MODULE_IDS[@]} - 1 ))" ]
-    run module_index not-a-module
+    status=0; module_index not-a-module >/dev/null || status=$?
     [ "$status" -ne 0 ]
 }
 
@@ -119,7 +123,9 @@ setup() {
     # Stub sourcing + a failing verify (avoid touching the real module).
     source() { :; }
     module_verify() { return 1; }
-    run verify_modules
+    # Call in the current shell (not a subshell) so VERIFY_PASSED/VERIFY_TOTAL
+    # side effects are observable; guard the expected failure from errexit.
+    status=0; verify_modules || status=$?
     [ "$status" -ne 0 ]
     [ "$VERIFY_PASSED" -eq 0 ]
     [ "$VERIFY_TOTAL" -eq 1 ]
@@ -131,6 +137,6 @@ setup() {
     FAILED_MODULES=("${MODULE_IDS[0]}")
     source() { :; }
     module_verify() { return 0; }
-    run verify_modules
+    verify_modules
     [ "$VERIFY_TOTAL" -eq 0 ]
 }
