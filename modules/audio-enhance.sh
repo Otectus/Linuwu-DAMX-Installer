@@ -26,13 +26,17 @@ module_install() {
     elif has_cmd yay; then
         log "Installing noise-suppression-for-voice via yay..."
         run yay -S --needed --noconfirm noise-suppression-for-voice
+    elif [[ "${DRY_RUN:-0}" -eq 1 ]]; then
+        # Short-circuit the whole branch: 'run git clone' would no-op but
+        # still return 0, sending a real makepkg into an empty temp dir.
+        log "[DRY RUN] Would clone noise-suppression-for-voice from AUR and build with makepkg."
     else
         log "No AUR helper found. Building noise-suppression-for-voice from AUR..."
         local _nsv_dir
         if ! _nsv_dir="$(mktemp -d "${TMPDIR:-/tmp}/archer-nsv-XXXXXX")"; then
             warn "Failed to create temp build directory. Install 'noise-suppression-for-voice' manually."
-        elif run git clone https://aur.archlinux.org/noise-suppression-for-voice.git "$_nsv_dir"; then
-            (cd "$_nsv_dir" && makepkg -si --needed --noconfirm) || warn "makepkg failed. Install 'noise-suppression-for-voice' manually."
+        elif git clone https://aur.archlinux.org/noise-suppression-for-voice.git "$_nsv_dir"; then
+            (cd "$_nsv_dir" && run makepkg -si --needed --noconfirm) || warn "makepkg failed. Install 'noise-suppression-for-voice' manually."
             rm -rf "$_nsv_dir"
         else
             warn "Failed to clone AUR package. Install 'noise-suppression-for-voice' manually."

@@ -26,3 +26,26 @@
     [ "$status" -eq 0 ]
     [[ "$output" == *"SURVIVED rc=1"* ]]
 }
+
+@test "audio-enhance module_install under dry-run never builds, clones, or makes temp dirs" {
+    # --dry-run is a documented safety guarantee: the no-AUR-helper branch
+    # must not run makepkg/git/mktemp for real (F-STAB4).
+    run bash -c '
+        set -uo pipefail
+        cd "$1"; M="$2"
+        DRY_RUN=1 NO_CONFIRM=1 VERBOSE=0 LOG_FILE="" REBOOT_REQUIRED=0
+        INSTALLED_FILES="" INSTALLED_PACKAGES=""
+        source lib/utils.sh
+        has_cmd() { return 1; }                       # force the no-AUR-helper branch
+        makepkg() { touch "$M/makepkg-ran"; }
+        git()     { touch "$M/git-ran"; }
+        mktemp()  { touch "$M/mktemp-ran"; command mktemp "$@"; }
+        source modules/audio-enhance.sh
+        module_install
+    ' _ "$BATS_TEST_DIRNAME/.." "$BATS_TEST_TMPDIR"
+    [ "$status" -eq 0 ]
+    [ ! -e "$BATS_TEST_TMPDIR/makepkg-ran" ]
+    [ ! -e "$BATS_TEST_TMPDIR/git-ran" ]
+    [ ! -e "$BATS_TEST_TMPDIR/mktemp-ran" ]
+    [[ "$output" == *"[DRY RUN]"* ]]
+}
