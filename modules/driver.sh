@@ -34,6 +34,9 @@ module_install() {
     log "Setting up $DRIVER_MODULE via DKMS..."
     run_sudo rm -rf "$src_dir"
     run_sudo git clone "$REPO_DRIVER" "$src_dir"
+    # Pin to a reviewed commit (lib/pins.sh) — never build upstream HEAD as root.
+    run_sudo git -C "$src_dir" checkout --detach "$ARCHER_PIN_LINUWU_SENSE" \
+        || { warn "Failed to checkout pinned Linuwu-Sense commit $ARCHER_PIN_LINUWU_SENSE."; return 1; }
 
     # Use centralized Clang detection from detect_kernel()
     local make_flags="$CLANG_BUILD_FLAGS"

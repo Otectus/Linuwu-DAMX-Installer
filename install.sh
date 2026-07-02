@@ -13,6 +13,7 @@ source "$SCRIPT_DIR/lib/utils.sh"
 source "$SCRIPT_DIR/lib/modules.sh"
 source "$SCRIPT_DIR/lib/detect.sh"
 source "$SCRIPT_DIR/lib/manifest.sh"
+source "$SCRIPT_DIR/lib/pins.sh"
 
 # --- Module registry (defined in lib/modules.sh) ---
 MODULE_SELECTED=()

@@ -45,6 +45,9 @@ module_install() {
         local src_dir="/usr/src/${_BATTERY_DKMS_NAME}-${_BATTERY_DKMS_VERSION}"
         run_sudo rm -rf "$src_dir"
         run_sudo git clone "$_BATTERY_REPO" "$src_dir"
+        # Pin to a reviewed commit (lib/pins.sh) — never build upstream HEAD as root.
+        run_sudo git -C "$src_dir" checkout --detach "$ARCHER_PIN_ACER_WMI_BATTERY" \
+            || { warn "Failed to checkout pinned acer-wmi-battery commit $ARCHER_PIN_ACER_WMI_BATTERY."; return 1; }
 
         # Inject Clang build flags into DKMS config if kernel was built with Clang
         if [[ "$IS_CLANG_KERNEL" -eq 1 ]] && [[ -f "$src_dir/dkms.conf" ]]; then

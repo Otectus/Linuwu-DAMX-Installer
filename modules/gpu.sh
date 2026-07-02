@@ -109,7 +109,10 @@ module_install() {
             || warn "$AUR_HELPER could not install envycontrol (network/AUR issue?)."
     else
         log "No AUR helper found. Installing EnvyControl via pip..."
-        run pip install envycontrol --break-system-packages 2>/dev/null || warn "pip install encountered issues."
+        # envycontrol is NOT on PyPI; install from upstream at the pinned
+        # release commit (lib/pins.sh).
+        run pip install "git+${ARCHER_PIN_ENVYCONTROL_REPO}@${ARCHER_PIN_ENVYCONTROL}" --break-system-packages 2>/dev/null \
+            || warn "Installing EnvyControl via pip encountered issues."
     fi
 
     # If EnvyControl still isn't available, fail cleanly BEFORE touching the

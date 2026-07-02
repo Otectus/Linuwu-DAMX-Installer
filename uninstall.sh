@@ -12,6 +12,7 @@ source "$SCRIPT_DIR/lib/utils.sh"
 source "$SCRIPT_DIR/lib/modules.sh"
 source "$SCRIPT_DIR/lib/detect.sh"
 source "$SCRIPT_DIR/lib/manifest.sh"
+source "$SCRIPT_DIR/lib/pins.sh"
 
 # Move any legacy manifest into the new system path before any read.
 migrate_legacy_manifest
