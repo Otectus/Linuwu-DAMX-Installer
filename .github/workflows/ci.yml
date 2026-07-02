@@ -2,9 +2,15 @@ name: CI
 
 on:
   push:
-    branches: [master, main]
+    branches: ['**']
   pull_request:
-    branches: [master, main]
+  workflow_dispatch:
+
+# push + pull_request on the same branch would double-run; key the group on
+# the source branch name for both event types and keep only the newest run.
+concurrency:
+  group: ci-${{ github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: true
 
 jobs:
   shellcheck:
