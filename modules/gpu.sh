@@ -18,16 +18,63 @@ module_check_installed() {
     has_cmd envycontrol
 }
 
-# Remove the no-op mkinitcpio shim and restore any original wrapper. Safe to
-# call repeatedly; called explicitly on every exit path (no RETURN trap — those
-# persist past this function under bash and would fire on later modules).
-_gpu_restore_mkinitcpio() {
-    local shim_path="$1" had_existing="$2"
-    run_sudo rm -f "$shim_path"
-    if [[ "$had_existing" -eq 1 ]] && [[ -f "$shim_path.archer-bak" ]]; then
-        run_sudo mv "$shim_path.archer-bak" "$shim_path"
+# --- mkinitcpio shim lifecycle -----------------------------------------------
+# EnvyControl internally runs 'mkinitcpio -P', which hangs on CachyOS/Limine.
+# We swap in a no-op shim for the duration of the envycontrol call. If that
+# shim ever outlives the installer (Ctrl-C, SIGTERM, crash), every future
+# initramfs rebuild silently does nothing — so the window is protected by
+# EXIT/INT/TERM traps.
+#
+# State is GLOBAL, not local: a trap firing after the enclosing function
+# returns cannot see locals, and under 'set -u' unset locals would crash it.
+# (No RETURN trap: bash RETURN traps aren't function-scoped without
+# 'functrace', so one set here would re-fire on later modules' returns.)
+_GPU_SHIM_PATH="/usr/local/bin/mkinitcpio"
+_GPU_SHIM_ACTIVE=0
+_GPU_SHIM_HAD_EXISTING=0
+
+# Swap the shim in. Arms the traps BEFORE touching the filesystem so an
+# interrupt landing between the mv and the tee still restores the original
+# wrapper (rm -f of a not-yet-created shim is harmless).
+# NOTE: this arms a process-global EXIT trap for the window's duration. If a
+# global install-rollback trap is ever added (F-STAB2), the two must compose.
+_gpu_shim_install() {
+    _GPU_SHIM_HAD_EXISTING=0
+    _GPU_SHIM_ACTIVE=1
+    trap '_gpu_shim_cleanup' EXIT
+    trap '_gpu_shim_on_signal INT' INT
+    trap '_gpu_shim_on_signal TERM' TERM
+    if [[ -f "$_GPU_SHIM_PATH" ]]; then
+        _GPU_SHIM_HAD_EXISTING=1
+        run_sudo mv "$_GPU_SHIM_PATH" "$_GPU_SHIM_PATH.archer-bak"
     fi
+    printf '#!/bin/sh\nexit 0\n' | run_sudo tee "$_GPU_SHIM_PATH" > /dev/null
+    run_sudo chmod 755 "$_GPU_SHIM_PATH"
 }
+
+# Remove the shim and restore any original wrapper. Idempotent: the guard
+# variable makes stray firings (or double calls) no-ops, and disarming the
+# traps here prevents them misfiring on later modules or at installer exit.
+_gpu_shim_cleanup() {
+    [[ "${_GPU_SHIM_ACTIVE:-0}" -eq 1 ]] || return 0
+    run_sudo rm -f "$_GPU_SHIM_PATH"
+    if [[ "$_GPU_SHIM_HAD_EXISTING" -eq 1 ]] && [[ -f "$_GPU_SHIM_PATH.archer-bak" ]]; then
+        run_sudo mv "$_GPU_SHIM_PATH.archer-bak" "$_GPU_SHIM_PATH"
+    fi
+    _GPU_SHIM_ACTIVE=0
+    trap - EXIT INT TERM
+}
+
+# On INT/TERM: clean up, then RE-RAISE the signal with default disposition so
+# the installer actually dies (a sourced-context trap must not swallow the
+# signal) and the exit status reflects the signal.
+_gpu_shim_on_signal() {
+    local sig="$1"
+    _gpu_shim_cleanup
+    trap - "$sig"
+    kill -s "$sig" "$$"
+}
+# -----------------------------------------------------------------------------
 
 # Return 0 if any usable NVIDIA kernel driver is already present. Accept every
 # variant — nvidia, nvidia-dkms, nvidia-open(-dkms), or a kernel-bundled module
@@ -91,34 +138,16 @@ module_install() {
     fi
 
     log "Setting GPU mode to: $gpu_mode"
-    # EnvyControl internally calls 'mkinitcpio -P' via subprocess.run, which
-    # hangs on CachyOS due to the Limine wrapper's interactive prompt and
-    # multi-kernel preset rebuilds. We temporarily replace mkinitcpio with a
-    # no-op shim so envycontrol skips it, then do our own rebuild afterwards.
-    local _shim_path="/usr/local/bin/mkinitcpio"
-    local _had_existing=0
-    if [[ -f "$_shim_path" ]]; then
-        _had_existing=1
-        run_sudo mv "$_shim_path" "$_shim_path.archer-bak"
-    fi
-    run_sudo tee "$_shim_path" > /dev/null <<'SHIM'
-#!/bin/sh
-exit 0
-SHIM
-    run_sudo chmod 755 "$_shim_path"
-
-    # Run envycontrol, then ALWAYS restore the shim on both success and failure.
-    # (No RETURN trap: bash RETURN traps aren't function-scoped without
-    # 'functrace', so one set here would re-fire on later modules' returns and,
-    # with the now-unset locals under 'set -u', crash with "_shim_path: unbound
-    # variable".)
+    # Shim mkinitcpio for the envycontrol run (see shim lifecycle above); the
+    # trap-protected window restores it on success, failure, or interrupt.
+    _gpu_shim_install
     local _rc=0
     if [[ "$gpu_mode" = "hybrid" ]]; then
         run_sudo envycontrol -s hybrid --rtd3 2 || _rc=1
     else
         run_sudo envycontrol -s "$gpu_mode" || _rc=1
     fi
-    _gpu_restore_mkinitcpio "$_shim_path" "$_had_existing"
+    _gpu_shim_cleanup
 
     if [[ "$_rc" -ne 0 ]]; then
         warn "envycontrol failed to set $gpu_mode mode."
@@ -136,20 +165,11 @@ SHIM
 module_uninstall() {
     log "Resetting GPU configuration..."
     if has_cmd envycontrol; then
-        # envycontrol --reset also calls mkinitcpio -P internally; use same shim trick
-        local _shim_path="/usr/local/bin/mkinitcpio"
-        local _had_existing=0
-        if [[ -f "$_shim_path" ]]; then
-            _had_existing=1
-            run_sudo mv "$_shim_path" "$_shim_path.archer-bak"
-        fi
-        printf '#!/bin/sh\nexit 0\n' | run_sudo tee "$_shim_path" > /dev/null
-        run_sudo chmod 755 "$_shim_path"
-
+        # envycontrol --reset also calls mkinitcpio -P internally; same
+        # trap-protected shim window as module_install.
+        _gpu_shim_install
         run_sudo envycontrol --reset 2>/dev/null || true
-
-        # Explicit restore (no RETURN trap — see module_install for why).
-        _gpu_restore_mkinitcpio "$_shim_path" "$_had_existing"
+        _gpu_shim_cleanup
 
         rebuild_initramfs
     fi
