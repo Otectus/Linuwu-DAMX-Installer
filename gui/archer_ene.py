@@ -20,7 +20,8 @@ WHY THIS EXISTS
 PROTOCOL SUMMARY
     0xA1  4 bytes, read-only: "03 65 21 83" = device count + device ids
     0xA2  1 byte:  select device            <- MANDATORY before 0xA4
-    0xA4 10 bytes: dev, mode, brightness, ?, ?, R, G, B, zonemask(16b LE)
+    0xA4 10 bytes: dev, mode, brightness, speed, direction, R, G, B,
+                   zonemask (16-bit LE)
 
     Device ids: 0x21 keyboard (4 zones), 0x65 performance-mode button LED,
                 0x83 lid logo.
@@ -32,6 +33,10 @@ PROTOCOL SUMMARY
     The zone field is a bitmask of the low four bits, so zones combine:
     0x3 paints the left half in a single write. The high byte is ignored.
 
+    Direction is encoded the OTHER WAY ROUND from Archer and the
+    Linuwu-Sense docs: on the wire 1 sweeps left-to-right and 2 sweeps
+    right-to-left. _to_wire_direction() does the translation.
+
 SAFETY
     - The target is resolved by HID identity, never by hidraw number: the
       numbering is not stable across boots (the ENE's reset times out during
@@ -40,9 +45,11 @@ SAFETY
     - The internal keyboard and the touchpad are explicitly refused.
     - Every value is range-checked against what the HID report descriptor
       declares before anything is written.
-    - Modes >= 8 are rejected: while sweeping the button LED they coincided
-      with fans starting and stopping, so in that range the report probably
-      reaches the performance profile and not just the LED.
+    - The accepted mode range is per device. The keyboard takes the full
+      verified range; every other device id stays capped at 7, because while
+      sweeping the button LED modes >= 8 coincided with fans starting and
+      stopping, so up there the report probably reaches the performance
+      profile and not just the LED.
 """
 
 import ctypes
@@ -71,16 +78,19 @@ DEV_LOGO = 0x83
 # --- keyboard modes, each observed against a black baseline ---------------
 # Numbering is the ENE's own and does NOT match the WMI mode numbers that
 # other Acer tools document. Names are matched to the effects PredatorSense
-# advertises, by behaviour; SHIFTING is the least certain of them.
+# advertises, by behaviour. Modes 8 and 10 are the least certain: 10 is read
+# as Shifting because it is the one with a visible direction, matching the
+# documented "shifting light effect, full control over speed, direction and
+# colour", which leaves 8 as Meteor.
 MODE_OFF = 1
 MODE_STATIC = 2
 MODE_BREATHING = 4       # smooth fade through pure colours
 MODE_NEON = 5            # whole board shifts colour at once, no sweep
 MODE_NEON_FAST = 6       # same, faster
 MODE_WAVE = 7            # lateral rainbow (factory default)
-MODE_SHIFTING = 8        # random segment, then a full-board flash
+MODE_METEOR = 8          # a point flares at random, then the board flashes
 MODE_ZOOM = 9            # circular, outside inward, colour drifting
-MODE_METEOR = 10         # streak crossing and returning over a dark board
+MODE_SHIFTING = 10       # light crosses and returns over a dark board
 MODE_TWINKLING = 11      # two of the four segments lit at random
 
 MODE_MAX_KEYBOARD = 12   # 13..31 produced nothing visible
@@ -93,9 +103,9 @@ EFFECTS = [
     ("Neon", MODE_NEON),
     ("Neon (fast)", MODE_NEON_FAST),
     ("Wave", MODE_WAVE),
-    ("Shifting", MODE_SHIFTING),
-    ("Zoom", MODE_ZOOM),
     ("Meteor", MODE_METEOR),
+    ("Zoom", MODE_ZOOM),
+    ("Shifting", MODE_SHIFTING),
     ("Twinkling", MODE_TWINKLING),
 ]
 

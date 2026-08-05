@@ -146,7 +146,7 @@ class KeyboardPage(Gtk.Box):
         # behaviour rather than by any documented mapping.
         effect_modes = Gtk.StringList.new([
             "Static", "Breathing", "Neon", "Neon (fast)", "Wave",
-            "Shifting", "Zoom", "Meteor", "Twinkling",
+            "Meteor", "Zoom", "Shifting", "Twinkling",
         ])
         self.effect_mode_row = Adw.ComboRow(
             title="Effect Mode",

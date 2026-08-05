@@ -96,8 +96,10 @@ Each device id needs its own catalogue.
 Numbering is the ENE's own and does **not** match the WMI mode numbers other
 Acer tools document (0 Static, 1 Breath, 2 Neon, 3 Wave, 4 Shifting, 5 Zoom).
 Names below are matched to the effects PredatorSense advertises, **by observed
-behaviour**; there is no documented mapping, and `Shifting` is the least
-certain of them.
+behaviour**; there is no documented mapping. Modes 8 and 10 are the least
+certain: 10 is read as `Shifting` because it is the one with a visible
+direction, which matches the documented "shifting light effect, full control
+over speed, direction, and colour", leaving 8 as `Meteor`.
 
 | Mode | Observed | Name |
 |---|---|---|
@@ -107,9 +109,9 @@ certain of them.
 | 5 | whole board shifts colour at once, no lateral sweep | Neon |
 | 6 | as 5, faster | Neon (fast) |
 | 7 | lateral rainbow (factory default) | Wave |
-| 8 | one segment lit dim, then a full-board flash, then another segment at random | Shifting *(tentative)* |
+| 8 | a point flares at random, then the whole board flashes | Meteor *(tentative)* |
 | 9 | circular, outside inward, darkening, colour drifting each cycle | Zoom |
-| 10 | streak crossing left-to-right then back, board dark behind it | Meteor |
+| 10 | light crosses left-to-right then back, board dark behind it | Shifting *(tentative)* |
 | 11 | two of the four segments lit at random, then off | Twinkling |
 | 12 | static | variant of Static |
 | 13–31 | nothing visible | — |
