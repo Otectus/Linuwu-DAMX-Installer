@@ -657,10 +657,8 @@ class HardwareManager:
     def set_four_zone_mode(self, mode, speed, brightness, direction, r, g, b):
         if getattr(self, "ene_ready", False):
             try:
-                # `speed` and `direction` map to bytes 3 and 4 of report 0xA4,
-                # whose meaning is not yet established. They are accepted for
-                # signature compatibility and ignored rather than guessed.
-                return archer_ene.set_effect(mode, brightness, r, g, b)
+                return archer_ene.set_effect(mode, brightness, r, g, b,
+                                             speed=speed, direction=direction)
             except Exception as exc:
                 logger.error(f"ENE effect write failed: {exc}")
                 return False

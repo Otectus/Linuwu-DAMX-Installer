@@ -140,11 +140,13 @@ class KeyboardPage(Gtk.Box):
         # Effect mode combo.
         # These are the effects actually verified on the ENE K5130 controller,
         # in the order the daemon maps them (see archer_ene.EFFECTS). The old
-        # eight-entry list came from the WMI documentation, whose effect field
-        # this firmware ignores, so most of those entries did nothing at all.
+        # list came from the WMI documentation, whose effect field this
+        # firmware ignores, so those entries did nothing at all. The names here
+        # are matched to the effects PredatorSense advertises, by observed
+        # behaviour rather than by any documented mapping.
         effect_modes = Gtk.StringList.new([
-            "Static", "Fade", "Colour Cycle",
-            "Colour Cycle (fast)", "Rainbow Wave",
+            "Static", "Breathing", "Neon", "Neon (fast)", "Wave",
+            "Shifting", "Zoom", "Meteor", "Twinkling",
         ])
         self.effect_mode_row = Adw.ComboRow(
             title="Effect Mode",
@@ -165,12 +167,7 @@ class KeyboardPage(Gtk.Box):
         self.speed_scale.set_value(5)
         speed_box.append(self.speed_scale)
         self.effects_group.add(speed_box)
-        # Bytes 3 and 4 of ENE report 0xA4 are very likely speed and direction,
-        # but that is not established yet, and the daemon refuses to guess. A
-        # control that silently does nothing is worse than no control, so both
-        # stay hidden until they are decoded. The widgets remain so that saved
-        # settings keep round-tripping unchanged.
-        speed_box.set_visible(False)
+        # Byte 3 of ENE report 0xA4, verified: 0-9, monotonically faster.
 
         # Effect colour
         color_box = Gtk.Box(spacing=12, margin_top=4)
@@ -189,7 +186,8 @@ class KeyboardPage(Gtk.Box):
             model=direction_model,
         )
         self.effects_group.add(self.direction_row)
-        self.direction_row.set_visible(False)   # see the note on speed above
+        # Byte 4 of report 0xA4, verified. The daemon translates this to the
+        # controller's own convention, which is the reverse of Archer's.
 
         # Apply effect button
         apply_effect_btn = Gtk.Button(

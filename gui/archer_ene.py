@@ -68,24 +68,45 @@ DEV_KEYBOARD = 0x21
 DEV_BUTTON = 0x65
 DEV_LOGO = 0x83
 
-# --- keyboard modes, verified against a black baseline --------------------
+# --- keyboard modes, each observed against a black baseline ---------------
+# Numbering is the ENE's own and does NOT match the WMI mode numbers that
+# other Acer tools document. Names are matched to the effects PredatorSense
+# advertises, by behaviour; SHIFTING is the least certain of them.
 MODE_OFF = 1
 MODE_STATIC = 2
-MODE_FADE = 4
-MODE_CYCLE = 5
-MODE_CYCLE_FAST = 6
-MODE_RAINBOW = 7
+MODE_BREATHING = 4       # smooth fade through pure colours
+MODE_NEON = 5            # whole board shifts colour at once, no sweep
+MODE_NEON_FAST = 6       # same, faster
+MODE_WAVE = 7            # lateral rainbow (factory default)
+MODE_SHIFTING = 8        # random segment, then a full-board flash
+MODE_ZOOM = 9            # circular, outside inward, colour drifting
+MODE_METEOR = 10         # streak crossing and returning over a dark board
+MODE_TWINKLING = 11      # two of the four segments lit at random
+
+MODE_MAX_KEYBOARD = 12   # 13..31 produced nothing visible
+MODE_MAX_OTHER = 7       # see the note on modes >= 8 in the module docstring
 
 # Effects offered in the GUI, in list order. Only verified modes are exposed.
 EFFECTS = [
     ("Static", MODE_STATIC),
-    ("Fade", MODE_FADE),
-    ("Colour Cycle", MODE_CYCLE),
-    ("Colour Cycle (fast)", MODE_CYCLE_FAST),
-    ("Rainbow Wave", MODE_RAINBOW),
+    ("Breathing", MODE_BREATHING),
+    ("Neon", MODE_NEON),
+    ("Neon (fast)", MODE_NEON_FAST),
+    ("Wave", MODE_WAVE),
+    ("Shifting", MODE_SHIFTING),
+    ("Zoom", MODE_ZOOM),
+    ("Meteor", MODE_METEOR),
+    ("Twinkling", MODE_TWINKLING),
 ]
 
 ZONE_ALL = 0x0F
+
+# Byte 4 of report 0xA4. Note this is the opposite of the convention Archer
+# and the Linuwu-Sense docs use, where 2 means left-to-right: on the wire
+# 1 sweeps left-to-right and 2 sweeps right-to-left. Callers pass Archer's
+# value and _to_wire_direction() flips it.
+DIR_LEFT_TO_RIGHT = 1
+DIR_RIGHT_TO_LEFT = 2
 
 # --- reports --------------------------------------------------------------
 _REPORT_LEN = {0xA2: 1, 0xA3: 8, 0xA4: 10}
@@ -194,14 +215,27 @@ def _check(name, value, lo, hi):
     return value
 
 
-def _apply(fd, device, mode, brightness, rgb, zone_mask):
-    _check("mode", mode, 1, 7)          # >= 8 may reach the performance profile
+def _to_wire_direction(direction):
+    """Archer/Linuwu use 2 for left-to-right; the controller uses 1. Flip."""
+    return DIR_LEFT_TO_RIGHT if direction == 2 else DIR_RIGHT_TO_LEFT
+
+
+def _apply(fd, device, mode, brightness, rgb, zone_mask, speed=0, direction=0):
+    # The keyboard tolerates the full verified range. Other devices stay capped
+    # at 7: on the performance-mode button LED, modes >= 8 coincided with fans
+    # starting and stopping, so up there the report probably reaches the
+    # performance profile rather than just the LED.
+    top = MODE_MAX_KEYBOARD if device == DEV_KEYBOARD else MODE_MAX_OTHER
+    _check("mode", mode, 1, top)
     _check("brightness", brightness, 0, 100)
+    _check("speed", speed, 0, 9)
+    _check("direction", direction, 0, 3)
     _check("zone_mask", zone_mask, 0, 0xFFFF)
     r, g, b = (_check(n, v, 0, 255) for n, v in zip("rgb", rgb))
 
     _write_report(fd, 0xA2, [device])   # select — mandatory
-    _write_report(fd, 0xA4, [device, mode, brightness, 0, 0, r, g, b,
+    _write_report(fd, 0xA4, [device, mode, brightness, speed, direction,
+                             r, g, b,
                              zone_mask & 0xFF, (zone_mask >> 8) & 0xFF])
 
 
@@ -233,8 +267,14 @@ def set_per_zone(zone1, zone2, zone3, zone4, brightness):
     return True
 
 
-def set_effect(effect_index, brightness, red, green, blue):
-    """Run one of EFFECTS on the whole keyboard."""
+def set_effect(effect_index, brightness, red, green, blue,
+               speed=0, direction=2):
+    """Run one of EFFECTS on the whole keyboard.
+
+    speed is 0-9, rising monotonically. direction follows Archer's convention
+    (2 = left to right) and is translated for the wire. Both are ignored by
+    the static modes, which is harmless.
+    """
     if not 0 <= effect_index < len(EFFECTS):
         raise EneError(f"effect index out of range: {effect_index}")
     mode = EFFECTS[effect_index][1]
@@ -242,7 +282,8 @@ def set_effect(effect_index, brightness, red, green, blue):
         fd = os.open(_resolve(), os.O_RDWR)
         try:
             _apply(fd, DEV_KEYBOARD, mode, brightness,
-                   (red, green, blue), ZONE_ALL)
+                   (red, green, blue), ZONE_ALL,
+                   speed=speed, direction=_to_wire_direction(direction))
         finally:
             os.close(fd)
     return True

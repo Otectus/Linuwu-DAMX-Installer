@@ -77,8 +77,8 @@ fails.
 | 0 | `0x21` | device id | — | same id selected in `0xA2` |
 | 1 | `0x41` | **mode** | 0–31 | see §6. **Semantics are per device** |
 | 2 | `0x43` | **brightness** | 0–100 | |
-| 3 | `0x42` | ? | 0–255 | undecoded (speed?) |
-| 4 | `0x44` | ? | 0–255 | undecoded (direction?) |
+| 3 | `0x42` | **speed** | 0–9 | monotonically faster; see §6.1 |
+| 4 | `0x44` | **direction** | 1–2 | see §6.1 |
 | 5 | `0x45` | **R** | 0–255 | |
 | 6 | `0x46` | **G** | 0–255 | |
 | 7 | `0x47` | **B** | 0–255 | |
@@ -93,16 +93,40 @@ Each device id needs its own catalogue.
 
 ### Keyboard (`0x21`) — verified
 
-| Mode | Effect |
-|---|---|
-| 1 | off |
-| **2** | **static colour** |
-| 4 | smooth fade through pure colours |
-| 5 | whole keyboard shifts between pure colours at once, no lateral sweep |
-| 6 | as 5, faster |
-| 7 | factory lateral rainbow |
+Numbering is the ENE's own and does **not** match the WMI mode numbers other
+Acer tools document (0 Static, 1 Breath, 2 Neon, 3 Wave, 4 Shifting, 5 Zoom).
+Names below are matched to the effects PredatorSense advertises, **by observed
+behaviour**; there is no documented mapping, and `Shifting` is the least
+certain of them.
 
-Modes 5 and 6 are not exposed by any existing tool for this machine.
+| Mode | Observed | Name |
+|---|---|---|
+| 1 | off | — |
+| **2** | **static colour** | Static |
+| 4 | smooth fade through pure colours | Breathing |
+| 5 | whole board shifts colour at once, no lateral sweep | Neon |
+| 6 | as 5, faster | Neon (fast) |
+| 7 | lateral rainbow (factory default) | Wave |
+| 8 | one segment lit dim, then a full-board flash, then another segment at random | Shifting *(tentative)* |
+| 9 | circular, outside inward, darkening, colour drifting each cycle | Zoom |
+| 10 | streak crossing left-to-right then back, board dark behind it | Meteor |
+| 11 | two of the four segments lit at random, then off | Twinkling |
+| 12 | static | variant of Static |
+| 13–31 | nothing visible | — |
+
+### 6.1 Speed and direction
+
+| Byte | Field | Values |
+|---|---|---|
+| 3 | speed | `0`–`9`, rising monotonically |
+| 4 | direction | `1` left→right · `2` right→left |
+
+⚠️ **The direction encoding is the reverse of the convention used by Archer and
+the Linuwu-Sense docs**, where `2` means left-to-right. Anything bridging the
+two must translate, or the UI label ends up inverted.
+
+Value `3` in byte 4 produced a trailing-comet variant rather than a third
+direction. Not characterised.
 
 ### Performance-mode button (`0x65`) — partial
 
@@ -180,6 +204,6 @@ almost no information unless the starting state is known.
 ## 12. Open questions
 
 - `0x83` (lid logo) colour encoding.
-- Bytes 3 and 4 of `0xA4`.
+- Byte 4 value `3`: a trailing-comet variant, not characterised.
 - Reapplying lighting after suspend/resume — `acer_suspend`/`acer_resume` do
   not touch RGB.
