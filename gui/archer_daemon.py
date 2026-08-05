@@ -676,6 +676,24 @@ class HardwareManager:
         val = f"{zone1},{zone2},{zone3},{zone4},{brightness}"
         return write_sysfs(path, val)
 
+    def poll_profile_led(self):
+        """Keep the button LED in step with the profile, whoever changed it.
+
+        set_thermal_profile() only covers changes made through Archer. The
+        Plasma widget, powerprofilesctl, the driver's own restore and the
+        hardware mode button all write platform_profile directly, and the LED
+        would silently drift out of step with the machine. Reading one small
+        sysfs file on a timer is cheap and catches every writer.
+
+        Returns True so the GLib timeout keeps re-arming.
+        """
+        if getattr(self, "ene_ready", False):
+            profile = read_sysfs(PLATFORM_PROFILE)
+            if profile and profile != getattr(self, "_led_profile", None):
+                self._led_profile = profile
+                self._sync_button_led(profile)
+        return True
+
     def reapply_lighting(self):
         """Re-send the saved lighting state. Called after resume.
 
@@ -1280,6 +1298,10 @@ def main():
             bus_name="org.freedesktop.login1",
         )
         logger.info("Listening for resume to reapply lighting")
+
+        # Catch profile changes made outside Archer, so the button LED cannot
+        # drift out of step with the machine.
+        GLib.timeout_add_seconds(3, hw.poll_profile_led)
     except Exception as e:
         # Not fatal: everything else still works, lighting just will not
         # survive a suspend.
