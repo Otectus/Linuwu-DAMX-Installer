@@ -137,10 +137,14 @@ class KeyboardPage(Gtk.Box):
         self.effects_group = Adw.PreferencesGroup(title="Lighting Effects")
         content.append(self.effects_group)
 
-        # Effect mode combo
+        # Effect mode combo.
+        # These are the effects actually verified on the ENE K5130 controller,
+        # in the order the daemon maps them (see archer_ene.EFFECTS). The old
+        # eight-entry list came from the WMI documentation, whose effect field
+        # this firmware ignores, so most of those entries did nothing at all.
         effect_modes = Gtk.StringList.new([
-            "Static", "Breathing", "Neon", "Wave",
-            "Shifting", "Zoom", "Meteor", "Twinkling",
+            "Static", "Fade", "Colour Cycle",
+            "Colour Cycle (fast)", "Rainbow Wave",
         ])
         self.effect_mode_row = Adw.ComboRow(
             title="Effect Mode",
@@ -161,6 +165,12 @@ class KeyboardPage(Gtk.Box):
         self.speed_scale.set_value(5)
         speed_box.append(self.speed_scale)
         self.effects_group.add(speed_box)
+        # Bytes 3 and 4 of ENE report 0xA4 are very likely speed and direction,
+        # but that is not established yet, and the daemon refuses to guess. A
+        # control that silently does nothing is worse than no control, so both
+        # stay hidden until they are decoded. The widgets remain so that saved
+        # settings keep round-tripping unchanged.
+        speed_box.set_visible(False)
 
         # Effect colour
         color_box = Gtk.Box(spacing=12, margin_top=4)
@@ -179,6 +189,7 @@ class KeyboardPage(Gtk.Box):
             model=direction_model,
         )
         self.effects_group.add(self.direction_row)
+        self.direction_row.set_visible(False)   # see the note on speed above
 
         # Apply effect button
         apply_effect_btn = Gtk.Button(
@@ -241,7 +252,11 @@ class KeyboardPage(Gtk.Box):
         effect = saved.get("four_zone_mode")
         if effect and has_effects:
             mode = effect.get("mode", 0)
-            self.effect_mode_row.set_selected(mode)
+            # The effect list shrank when the WMI-derived entries were replaced
+            # by the verified ENE ones, so a settings file written by an older
+            # build can hold an index past the end of the model. Clamp it.
+            n_effects = self.effect_mode_row.get_model().get_n_items()
+            self.effect_mode_row.set_selected(min(mode, n_effects - 1))
             speed = effect.get("speed", 5)
             self.speed_scale.set_value(speed)
             r = effect.get("red", 0)

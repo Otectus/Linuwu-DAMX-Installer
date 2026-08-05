@@ -16,6 +16,15 @@ import time
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
+# Direct ENE K5130 backlight backend. On PHN16S-71 the WMI path applies
+# brightness but silently discards colour and effect mode, so keyboard
+# lighting has to go straight to the LED controller. Optional import: if the
+# module or the chip is absent we fall back to the sysfs/WMI path.
+try:
+    import archer_ene
+except Exception:  # pragma: no cover - absence is a supported configuration
+    archer_ene = None
+
 # --- Configuration ---
 # /run/archer is created by systemd via RuntimeDirectory=archer in the unit
 # file. The PID location matches PIDFile= in archer-daemon.service.
@@ -355,14 +364,23 @@ class HardwareManager:
         # Thermal profiles
         if os.path.exists(PLATFORM_PROFILE):
             self.features.append("thermal_profiles")
-        # Keyboard features (under driver_base/four_zoned_kb/)
-        if self.driver_base:
+        # Keyboard features. The ENE backend is preferred when the controller
+        # is present: it is the only path that actually applies colour on this
+        # model. The sysfs check stays as the fallback for other hardware.
+        self.ene_ready = bool(archer_ene and archer_ene.available())
+        if self.ene_ready:
+            self.features.append("keyboard_per_zone")
+            self.features.append("keyboard_effects")
+            logger.info("Keyboard lighting: ENE K5130 backend active")
+        elif self.driver_base:
             kb_base = os.path.join(self.driver_base, "four_zoned_kb")
             if os.path.isdir(kb_base):
                 if os.path.exists(os.path.join(kb_base, "per_zone_mode")):
                     self.features.append("keyboard_per_zone")
                 if os.path.exists(os.path.join(kb_base, "four_zone_mode")):
                     self.features.append("keyboard_effects")
+            logger.info("Keyboard lighting: sysfs/WMI fallback "
+                        "(colour may not be applied by firmware)")
         # Sense-specific features (under predator_sense/ or nitro_sense/)
         if self.sense_base:
             sense_features = {
@@ -617,7 +635,19 @@ class HardwareManager:
         return info
 
     # --- Keyboard Lighting ---
+    # Both setters prefer the ENE backend and keep the sysfs/WMI write as a
+    # fallback. Note the sysfs path is not merely less capable: on PHN16S-71 it
+    # reports success and reads back the exact colours it was given while the
+    # LEDs never change, which is why it cannot be trusted as verification.
+
     def set_per_zone_mode(self, zone1, zone2, zone3, zone4, brightness):
+        if getattr(self, "ene_ready", False):
+            try:
+                return archer_ene.set_per_zone(zone1, zone2, zone3, zone4,
+                                               brightness)
+            except Exception as exc:
+                logger.error(f"ENE per-zone write failed: {exc}")
+                return False
         path = self._driver_path("four_zoned_kb/per_zone_mode")
         if not path:
             return False
@@ -625,6 +655,15 @@ class HardwareManager:
         return write_sysfs(path, val)
 
     def set_four_zone_mode(self, mode, speed, brightness, direction, r, g, b):
+        if getattr(self, "ene_ready", False):
+            try:
+                # `speed` and `direction` map to bytes 3 and 4 of report 0xA4,
+                # whose meaning is not yet established. They are accepted for
+                # signature compatibility and ignored rather than guessed.
+                return archer_ene.set_effect(mode, brightness, r, g, b)
+            except Exception as exc:
+                logger.error(f"ENE effect write failed: {exc}")
+                return False
         path = self._driver_path("four_zoned_kb/four_zone_mode")
         if not path:
             return False
