@@ -27,9 +27,10 @@ PROTOCOL SUMMARY
                 0x83 lid logo. All three take colour; each has its own mode
                 numbering (see MODE_* and LOGO_/BUTTON_ constants).
 
-    Mode semantics are PER DEVICE and do not carry over. On the keyboard
-    mode 1 turns it off while mode 2 is static colour; on the button LED
-    mode 1 is static colour. Do not generalise between devices.
+    Mode 2 is static colour on all three devices. The rest of the mode map
+    is per device and does not carry over: on the keyboard mode 1 turns it
+    off, on the button LED mode 1 does nothing and mode 6 turns it off.
+    Check each device rather than assuming.
 
     The zone field is a bitmask of the low four bits, so zones combine:
     0x3 paints the left half in a single write. The high byte is ignored.
@@ -104,9 +105,13 @@ LOGO_OFF = 1
 LOGO_STATIC = 2
 
 # --- performance-mode button LED (0x65) -----------------------------------
-# 1 static, honours RGB · 4 breathing then rainbow · 6 off
+# 1 nothing · 2 static, honours RGB · 3 nothing · 4 breathing · 5 colour cycle
+# 6 off · 7 nothing
+#
+# Mode 2 is static colour on ALL THREE devices. An earlier reading had the
+# button at mode 1, which is why every write to it silently did nothing.
 BUTTON_OFF = 6
-BUTTON_STATIC = 1
+BUTTON_STATIC = 2
 
 # Colour shown on the button LED for each platform profile. The button is the
 # performance-mode button, so tying it to the profile is what it is for.

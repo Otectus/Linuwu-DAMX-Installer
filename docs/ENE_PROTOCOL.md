@@ -54,7 +54,7 @@ the device ids.
 
 | Device id | Physical element | How it was verified |
 |---|---|---|
-| `0x65` | performance-mode button LED | mode 1 → took the exact red requested |
+| `0x65` | performance-mode button LED | mode 2 → took the exact red requested |
 | `0x21` | **keyboard**, 4 zones | mode 2 → bright static green from a dark baseline |
 | `0x83` | **lid logo** | mode 2 → follows the requested RGB exactly, from an off baseline |
 
@@ -86,10 +86,11 @@ fails.
 
 ## 6. Modes
 
-⚠️ **Mode semantics do not carry over between devices.** On the keyboard mode 1
-turns it off; on the button LED mode 1 is static colour. Generalising from one
-device to another produces silent no-ops, and this cost a lot of time to find.
-Each device id needs its own catalogue.
+**Mode 2 is static colour on all three devices.** Beyond that the map is per
+device and does **not** carry over: on the keyboard mode 1 turns it off, on the
+button LED mode 1 does nothing at all and mode 6 turns it off. Assuming
+otherwise produces silent no-ops — an earlier reading put the button's static
+at mode 1, and every write to it quietly did nothing until that was caught.
 
 ### Keyboard (`0x21`) — verified
 
@@ -149,13 +150,17 @@ Re-tested with the mode held constant at 2 the logo follows red, green, blue
 and white exactly, and repeating an identical write repeats the identical
 result — so there is no hidden counter either.
 
-### Performance-mode button (`0x65`) — partial
+### Performance-mode button (`0x65`) — verified
 
 | Mode | Effect |
 |---|---|
-| 1 | static colour |
-| 4 | breathing, then rainbow |
-| 6 | off |
+| 1 | nothing |
+| **2** | **static colour, honours RGB** |
+| 3 | nothing |
+| 4 | breathing, holding the colour |
+| 5 | colour cycle |
+| 6 | off — and briefly darkens the keyboard too, which the EC restores after a second or two |
+| 7 | nothing |
 | **≥ 8** | ⚠️ coincided with fans starting and stopping. Probably reaches the performance profile, not just the LED. **Do not sweep this range blindly.** |
 
 ## 7. Zone bitmask (bytes 8–9) — verified exhaustively
