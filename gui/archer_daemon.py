@@ -535,7 +535,28 @@ class HardwareManager:
         if profile not in choices:
             return False, f"Invalid profile '{profile}'. Available: {choices}"
         ok = write_sysfs(PLATFORM_PROFILE, profile)
+        if ok:
+            self._sync_button_led(profile)
         return ok, None if ok else "Failed to write profile"
+
+    def _sync_button_led(self, profile):
+        """Colour the performance-mode button LED after the active profile.
+
+        That is what the LED does from the factory. Once the ENE backend takes
+        the controller over, the firmware stops driving it, so the daemon has
+        to keep it in step or the button just goes dark.
+
+        Failures are logged and swallowed on purpose: a lighting detail must
+        never make a thermal profile change report failure.
+        """
+        if not getattr(self, "ene_ready", False):
+            return
+        if not self.settings.get("button_follows_profile", True):
+            return
+        try:
+            archer_ene.set_button_for_profile(profile)
+        except Exception as exc:
+            logger.warning(f"Could not update the button LED: {exc}")
 
     # --- Fan Control ---
     def get_fan_speed(self):

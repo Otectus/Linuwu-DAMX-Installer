@@ -56,7 +56,7 @@ the device ids.
 |---|---|---|
 | `0x65` | performance-mode button LED | mode 1 → took the exact red requested |
 | `0x21` | **keyboard**, 4 zones | mode 2 → bright static green from a dark baseline |
-| `0x83` | lid logo | responds, but does not interpret RGB like the keyboard (see §8) |
+| `0x83` | **lid logo** | mode 2 → follows the requested RGB exactly, from an off baseline |
 
 ## 4. Required sequence
 
@@ -130,6 +130,25 @@ two must translate, or the UI label ends up inverted.
 Value `3` in byte 4 produced a trailing-comet variant rather than a third
 direction. Not characterised.
 
+### Lid logo (`0x83`) — verified
+
+| Mode | Effect |
+|---|---|
+| 1 | off |
+| **2** | **static colour, honours RGB** |
+| 3 | off |
+| 4 | fixed red, RGB ignored |
+| 5 | slow colour cycle |
+| 6 | fixed yellow, RGB ignored |
+| 7 | off |
+
+An earlier round concluded the logo did not read the RGB bytes at all, because
+the same green was sent with modes 1, 2 and 4 and produced off, green and red.
+Three modes with three different behaviours, read as one capricious colour.
+Re-tested with the mode held constant at 2 the logo follows red, green, blue
+and white exactly, and repeating an identical write repeats the identical
+result — so there is no hidden counter either.
+
 ### Performance-mode button (`0x65`) — partial
 
 | Mode | Effect |
@@ -162,10 +181,6 @@ direction. Not characterised.
 | Effect mode over **WMI** (`set_kb_status`) | ignored |
 | Brightness over **WMI** | ✅ genuinely applied |
 | Per-zone buffer via report `0xA3` | ignored — `0xA4` wins. Loading four distinct colours and applying blue produced an all-blue keyboard |
-
-The lid logo (`0x83`) lights up, but three consecutive writes of the *same*
-colour produced green, then yellow, then red. It does not read the RGB bytes
-the way the keyboard does. Undecoded.
 
 ## 9. Worked example — four zones, four colours
 
@@ -205,7 +220,6 @@ almost no information unless the starting state is known.
 
 ## 12. Open questions
 
-- `0x83` (lid logo) colour encoding.
 - Byte 4 value `3`: a trailing-comet variant, not characterised.
 - Reapplying lighting after suspend/resume — `acer_suspend`/`acer_resume` do
   not touch RGB.

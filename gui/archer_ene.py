@@ -24,7 +24,8 @@ PROTOCOL SUMMARY
                    zonemask (16-bit LE)
 
     Device ids: 0x21 keyboard (4 zones), 0x65 performance-mode button LED,
-                0x83 lid logo.
+                0x83 lid logo. All three take colour; each has its own mode
+                numbering (see MODE_* and LOGO_/BUTTON_ constants).
 
     Mode semantics are PER DEVICE and do not carry over. On the keyboard
     mode 1 turns it off while mode 2 is static colour; on the button LED
@@ -95,6 +96,27 @@ MODE_TWINKLING = 11      # two of the four segments lit at random
 
 MODE_MAX_KEYBOARD = 12   # 13..31 produced nothing visible
 MODE_MAX_OTHER = 7       # see the note on modes >= 8 in the module docstring
+
+# --- lid logo (0x83), verified from an off baseline -----------------------
+# 1 off · 2 static, honours RGB · 3 off · 4 fixed red · 5 slow cycle
+# 6 fixed yellow · 7 off
+LOGO_OFF = 1
+LOGO_STATIC = 2
+
+# --- performance-mode button LED (0x65) -----------------------------------
+# 1 static, honours RGB · 4 breathing then rainbow · 6 off
+BUTTON_OFF = 6
+BUTTON_STATIC = 1
+
+# Colour shown on the button LED for each platform profile. The button is the
+# performance-mode button, so tying it to the profile is what it is for.
+PROFILE_COLOURS = {
+    "low-power":            "00b0ff",   # cyan
+    "quiet":                "00ff40",   # green
+    "balanced":             "ffffff",   # white
+    "balanced-performance": "8000ff",   # purple, the factory colour here
+    "performance":          "ff0000",   # red
+}
 
 # Effects offered in the GUI, in list order. Only verified modes are exposed.
 EFFECTS = [
@@ -307,3 +329,45 @@ def set_off():
         finally:
             os.close(fd)
     return True
+
+
+def set_logo(colour, brightness=100):
+    """Light the lid logo a solid colour. Pass None to switch it off."""
+    with _lock:
+        fd = os.open(_resolve(), os.O_RDWR)
+        try:
+            if colour is None:
+                _apply(fd, DEV_LOGO, LOGO_OFF, 0, (0, 0, 0), 0xFFFF)
+            else:
+                _apply(fd, DEV_LOGO, LOGO_STATIC, brightness,
+                       _hex_to_rgb(colour), 0xFFFF)
+        finally:
+            os.close(fd)
+    return True
+
+
+def set_button(colour, brightness=100):
+    """Light the performance-mode button LED. Pass None to switch it off."""
+    with _lock:
+        fd = os.open(_resolve(), os.O_RDWR)
+        try:
+            if colour is None:
+                _apply(fd, DEV_BUTTON, BUTTON_OFF, 0, (0, 0, 0), 0xFFFF)
+            else:
+                _apply(fd, DEV_BUTTON, BUTTON_STATIC, brightness,
+                       _hex_to_rgb(colour), 0xFFFF)
+        finally:
+            os.close(fd)
+    return True
+
+
+def set_button_for_profile(profile, brightness=100):
+    """Colour the button LED after the active platform profile.
+
+    Unknown profile names are left alone rather than guessed at, so a kernel
+    that grows a new profile does not silently get the wrong colour.
+    """
+    colour = PROFILE_COLOURS.get(profile)
+    if colour is None:
+        return False
+    return set_button(colour, brightness)
