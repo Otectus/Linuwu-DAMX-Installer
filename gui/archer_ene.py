@@ -110,11 +110,17 @@ BUTTON_STATIC = 1
 
 # Colour shown on the button LED for each platform profile. The button is the
 # performance-mode button, so tying it to the profile is what it is for.
+#
+# These are DEFAULTS CHOSEN HERE, not Acer's mapping: the only value taken
+# from observed hardware is the purple on balanced-performance. Acer does not
+# publish the per-mode colours and the factory firmware stops driving the LED
+# once this backend takes over, so there is nothing left to read them from.
+# Override per profile with button_colours in settings.json.
 PROFILE_COLOURS = {
     "low-power":            "00b0ff",   # cyan
     "quiet":                "00ff40",   # green
-    "balanced":             "ffffff",   # white
-    "balanced-performance": "8000ff",   # purple, the factory colour here
+    "balanced":             "0080ff",   # blue, matching Archer's own palette
+    "balanced-performance": "8000ff",   # purple, observed on this machine
     "performance":          "ff0000",   # red
 }
 
@@ -361,13 +367,16 @@ def set_button(colour, brightness=100):
     return True
 
 
-def set_button_for_profile(profile, brightness=100):
+def set_button_for_profile(profile, brightness=100, overrides=None):
     """Colour the button LED after the active platform profile.
+
+    overrides is an optional {profile: "RRGGBB"} map from settings, which
+    takes precedence over PROFILE_COLOURS.
 
     Unknown profile names are left alone rather than guessed at, so a kernel
     that grows a new profile does not silently get the wrong colour.
     """
-    colour = PROFILE_COLOURS.get(profile)
+    colour = (overrides or {}).get(profile) or PROFILE_COLOURS.get(profile)
     if colour is None:
         return False
     return set_button(colour, brightness)

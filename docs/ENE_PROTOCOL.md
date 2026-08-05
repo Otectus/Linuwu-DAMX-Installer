@@ -221,5 +221,8 @@ almost no information unless the starting state is known.
 ## 12. Open questions
 
 - Byte 4 value `3`: a trailing-comet variant, not characterised.
-- Reapplying lighting after suspend/resume — `acer_suspend`/`acer_resume` do
-  not touch RGB.
+- Acer's real per-profile colours for the button LED. Not published, and the
+  factory firmware stops driving the LED once this backend takes over, so
+  there is nothing left to read them from. The defaults shipped here are a
+  choice, not a discovery; only the purple on `balanced-performance` came
+  from observed hardware.

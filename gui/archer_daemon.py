@@ -554,7 +554,8 @@ class HardwareManager:
         if not self.settings.get("button_follows_profile", True):
             return
         try:
-            archer_ene.set_button_for_profile(profile)
+            archer_ene.set_button_for_profile(
+                profile, overrides=self.settings.get("button_colours"))
         except Exception as exc:
             logger.warning(f"Could not update the button LED: {exc}")
 
@@ -674,6 +675,44 @@ class HardwareManager:
             return False
         val = f"{zone1},{zone2},{zone3},{zone4},{brightness}"
         return write_sysfs(path, val)
+
+    def reapply_lighting(self):
+        """Re-send the saved lighting state. Called after resume.
+
+        The ENE does not keep its state across a suspend and the driver does
+        not restore it, so without this the keyboard comes back under whatever
+        the EC decides.
+
+        Deliberately narrow: lighting only. A resume is not the moment to start
+        rewriting the thermal profile or the fans, so those are left alone even
+        though the same settings file holds them.
+        """
+        if not getattr(self, "ene_ready", False):
+            return False
+        try:
+            if self.settings.get("last_keyboard_mode") == "effect":
+                e = self.settings.get("four_zone_mode") or {}
+                if e:
+                    self.set_four_zone_mode(
+                        e.get("mode", 0), e.get("speed", 5),
+                        e.get("brightness", 100), e.get("direction", 2),
+                        e.get("red", 0), e.get("green", 0), e.get("blue", 255),
+                    )
+            else:
+                pz = self.settings.get("per_zone_mode") or {}
+                if pz:
+                    self.set_per_zone_mode(
+                        pz["zone1"], pz["zone2"], pz["zone3"], pz["zone4"],
+                        pz["brightness"],
+                    )
+            profile = read_sysfs(PLATFORM_PROFILE)
+            if profile:
+                self._sync_button_led(profile)
+            logger.info("Lighting reapplied after resume")
+            return True
+        except Exception as exc:
+            logger.error(f"Reapplying lighting after resume failed: {exc}")
+            return False
 
     def set_four_zone_mode(self, mode, speed, brightness, direction, r, g, b):
         if getattr(self, "ene_ready", False):
@@ -1216,6 +1255,35 @@ def main():
         )
         cleanup_pid()
         sys.exit(1)
+
+    # Reapply lighting after resume. Neither acer_suspend() nor acer_resume()
+    # in the driver touch RGB, and the ENE loses our state across the sleep, so
+    # without this the keyboard comes back to whatever the EC decides.
+    # Hooking logind's PrepareForSleep keeps this self-contained: no extra
+    # systemd unit to install, and the daemon is already running a GLib loop.
+    try:
+        def _on_prepare_for_sleep(sleeping):
+            if sleeping:
+                return
+            # The I2C-HID controller re-enumerates a moment after resume, and
+            # PrepareForSleep(False) arrives before that. Writing immediately
+            # would just fail, so give it a beat. Returning False makes the
+            # timeout fire once rather than repeat.
+            GLib.timeout_add_seconds(
+                2, lambda: (hw.reapply_lighting(), False)[1])
+
+        system_bus = dbus.SystemBus()
+        system_bus.add_signal_receiver(
+            _on_prepare_for_sleep,
+            signal_name="PrepareForSleep",
+            dbus_interface="org.freedesktop.login1.Manager",
+            bus_name="org.freedesktop.login1",
+        )
+        logger.info("Listening for resume to reapply lighting")
+    except Exception as e:
+        # Not fatal: everything else still works, lighting just will not
+        # survive a suspend.
+        logger.warning(f"Could not subscribe to PrepareForSleep: {e}")
 
     def signal_handler(sig, frame):
         logger.info("Shutting down...")
