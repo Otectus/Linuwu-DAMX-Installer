@@ -16,6 +16,15 @@ import time
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
+# Direct ENE K5130 backlight backend. On PHN16S-71 the WMI path applies
+# brightness but silently discards colour and effect mode, so keyboard
+# lighting has to go straight to the LED controller. Optional import: if the
+# module or the chip is absent we fall back to the sysfs/WMI path.
+try:
+    import archer_ene
+except Exception:  # pragma: no cover - absence is a supported configuration
+    archer_ene = None
+
 # --- Configuration ---
 # /run/archer is created by systemd via RuntimeDirectory=archer in the unit
 # file. The PID location matches PIDFile= in archer-daemon.service.
@@ -355,14 +364,23 @@ class HardwareManager:
         # Thermal profiles
         if os.path.exists(PLATFORM_PROFILE):
             self.features.append("thermal_profiles")
-        # Keyboard features (under driver_base/four_zoned_kb/)
-        if self.driver_base:
+        # Keyboard features. The ENE backend is preferred when the controller
+        # is present: it is the only path that actually applies colour on this
+        # model. The sysfs check stays as the fallback for other hardware.
+        self.ene_ready = bool(archer_ene and archer_ene.available())
+        if self.ene_ready:
+            self.features.append("keyboard_per_zone")
+            self.features.append("keyboard_effects")
+            logger.info("Keyboard lighting: ENE K5130 backend active")
+        elif self.driver_base:
             kb_base = os.path.join(self.driver_base, "four_zoned_kb")
             if os.path.isdir(kb_base):
                 if os.path.exists(os.path.join(kb_base, "per_zone_mode")):
                     self.features.append("keyboard_per_zone")
                 if os.path.exists(os.path.join(kb_base, "four_zone_mode")):
                     self.features.append("keyboard_effects")
+            logger.info("Keyboard lighting: sysfs/WMI fallback "
+                        "(colour may not be applied by firmware)")
         # Sense-specific features (under predator_sense/ or nitro_sense/)
         if self.sense_base:
             sense_features = {
@@ -517,7 +535,29 @@ class HardwareManager:
         if profile not in choices:
             return False, f"Invalid profile '{profile}'. Available: {choices}"
         ok = write_sysfs(PLATFORM_PROFILE, profile)
+        if ok:
+            self._sync_button_led(profile)
         return ok, None if ok else "Failed to write profile"
+
+    def _sync_button_led(self, profile):
+        """Colour the performance-mode button LED after the active profile.
+
+        That is what the LED does from the factory. Once the ENE backend takes
+        the controller over, the firmware stops driving it, so the daemon has
+        to keep it in step or the button just goes dark.
+
+        Failures are logged and swallowed on purpose: a lighting detail must
+        never make a thermal profile change report failure.
+        """
+        if not getattr(self, "ene_ready", False):
+            return
+        if not self.settings.get("button_follows_profile", True):
+            return
+        try:
+            archer_ene.set_button_for_profile(
+                profile, overrides=self.settings.get("button_colours"))
+        except Exception as exc:
+            logger.warning(f"Could not update the button LED: {exc}")
 
     # --- Fan Control ---
     def get_fan_speed(self):
@@ -617,14 +657,89 @@ class HardwareManager:
         return info
 
     # --- Keyboard Lighting ---
+    # Both setters prefer the ENE backend and keep the sysfs/WMI write as a
+    # fallback. Note the sysfs path is not merely less capable: on PHN16S-71 it
+    # reports success and reads back the exact colours it was given while the
+    # LEDs never change, which is why it cannot be trusted as verification.
+
     def set_per_zone_mode(self, zone1, zone2, zone3, zone4, brightness):
+        if getattr(self, "ene_ready", False):
+            try:
+                return archer_ene.set_per_zone(zone1, zone2, zone3, zone4,
+                                               brightness)
+            except Exception as exc:
+                logger.error(f"ENE per-zone write failed: {exc}")
+                return False
         path = self._driver_path("four_zoned_kb/per_zone_mode")
         if not path:
             return False
         val = f"{zone1},{zone2},{zone3},{zone4},{brightness}"
         return write_sysfs(path, val)
 
+    def poll_profile_led(self):
+        """Keep the button LED in step with the profile, whoever changed it.
+
+        set_thermal_profile() only covers changes made through Archer. The
+        Plasma widget, powerprofilesctl, the driver's own restore and the
+        hardware mode button all write platform_profile directly, and the LED
+        would silently drift out of step with the machine. Reading one small
+        sysfs file on a timer is cheap and catches every writer.
+
+        Returns True so the GLib timeout keeps re-arming.
+        """
+        if getattr(self, "ene_ready", False):
+            profile = read_sysfs(PLATFORM_PROFILE)
+            if profile and profile != getattr(self, "_led_profile", None):
+                self._led_profile = profile
+                self._sync_button_led(profile)
+        return True
+
+    def reapply_lighting(self):
+        """Re-send the saved lighting state. Called after resume.
+
+        The ENE does not keep its state across a suspend and the driver does
+        not restore it, so without this the keyboard comes back under whatever
+        the EC decides.
+
+        Deliberately narrow: lighting only. A resume is not the moment to start
+        rewriting the thermal profile or the fans, so those are left alone even
+        though the same settings file holds them.
+        """
+        if not getattr(self, "ene_ready", False):
+            return False
+        try:
+            if self.settings.get("last_keyboard_mode") == "effect":
+                e = self.settings.get("four_zone_mode") or {}
+                if e:
+                    self.set_four_zone_mode(
+                        e.get("mode", 0), e.get("speed", 5),
+                        e.get("brightness", 100), e.get("direction", 2),
+                        e.get("red", 0), e.get("green", 0), e.get("blue", 255),
+                    )
+            else:
+                pz = self.settings.get("per_zone_mode") or {}
+                if pz:
+                    self.set_per_zone_mode(
+                        pz["zone1"], pz["zone2"], pz["zone3"], pz["zone4"],
+                        pz["brightness"],
+                    )
+            profile = read_sysfs(PLATFORM_PROFILE)
+            if profile:
+                self._sync_button_led(profile)
+            logger.info("Lighting reapplied after resume")
+            return True
+        except Exception as exc:
+            logger.error(f"Reapplying lighting after resume failed: {exc}")
+            return False
+
     def set_four_zone_mode(self, mode, speed, brightness, direction, r, g, b):
+        if getattr(self, "ene_ready", False):
+            try:
+                return archer_ene.set_effect(mode, brightness, r, g, b,
+                                             speed=speed, direction=direction)
+            except Exception as exc:
+                logger.error(f"ENE effect write failed: {exc}")
+                return False
         path = self._driver_path("four_zoned_kb/four_zone_mode")
         if not path:
             return False
@@ -1158,6 +1273,39 @@ def main():
         )
         cleanup_pid()
         sys.exit(1)
+
+    # Reapply lighting after resume. Neither acer_suspend() nor acer_resume()
+    # in the driver touch RGB, and the ENE loses our state across the sleep, so
+    # without this the keyboard comes back to whatever the EC decides.
+    # Hooking logind's PrepareForSleep keeps this self-contained: no extra
+    # systemd unit to install, and the daemon is already running a GLib loop.
+    try:
+        def _on_prepare_for_sleep(sleeping):
+            if sleeping:
+                return
+            # The I2C-HID controller re-enumerates a moment after resume, and
+            # PrepareForSleep(False) arrives before that. Writing immediately
+            # would just fail, so give it a beat. Returning False makes the
+            # timeout fire once rather than repeat.
+            GLib.timeout_add_seconds(
+                2, lambda: (hw.reapply_lighting(), False)[1])
+
+        system_bus = dbus.SystemBus()
+        system_bus.add_signal_receiver(
+            _on_prepare_for_sleep,
+            signal_name="PrepareForSleep",
+            dbus_interface="org.freedesktop.login1.Manager",
+            bus_name="org.freedesktop.login1",
+        )
+        logger.info("Listening for resume to reapply lighting")
+
+        # Catch profile changes made outside Archer, so the button LED cannot
+        # drift out of step with the machine.
+        GLib.timeout_add_seconds(3, hw.poll_profile_led)
+    except Exception as e:
+        # Not fatal: everything else still works, lighting just will not
+        # survive a suspend.
+        logger.warning(f"Could not subscribe to PrepareForSleep: {e}")
 
     def signal_handler(sig, frame):
         logger.info("Shutting down...")

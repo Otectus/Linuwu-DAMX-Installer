@@ -137,10 +137,16 @@ class KeyboardPage(Gtk.Box):
         self.effects_group = Adw.PreferencesGroup(title="Lighting Effects")
         content.append(self.effects_group)
 
-        # Effect mode combo
+        # Effect mode combo.
+        # These are the effects actually verified on the ENE K5130 controller,
+        # in the order the daemon maps them (see archer_ene.EFFECTS). The old
+        # list came from the WMI documentation, whose effect field this
+        # firmware ignores, so those entries did nothing at all. The names here
+        # are matched to the effects PredatorSense advertises, by observed
+        # behaviour rather than by any documented mapping.
         effect_modes = Gtk.StringList.new([
-            "Static", "Breathing", "Neon", "Wave",
-            "Shifting", "Zoom", "Meteor", "Twinkling",
+            "Static", "Breathing", "Neon", "Neon (fast)", "Wave",
+            "Meteor", "Zoom", "Shifting", "Twinkling",
         ])
         self.effect_mode_row = Adw.ComboRow(
             title="Effect Mode",
@@ -161,6 +167,7 @@ class KeyboardPage(Gtk.Box):
         self.speed_scale.set_value(5)
         speed_box.append(self.speed_scale)
         self.effects_group.add(speed_box)
+        # Byte 3 of ENE report 0xA4, verified: 0-9, monotonically faster.
 
         # Effect colour
         color_box = Gtk.Box(spacing=12, margin_top=4)
@@ -179,6 +186,8 @@ class KeyboardPage(Gtk.Box):
             model=direction_model,
         )
         self.effects_group.add(self.direction_row)
+        # Byte 4 of report 0xA4, verified. The daemon translates this to the
+        # controller's own convention, which is the reverse of Archer's.
 
         # Apply effect button
         apply_effect_btn = Gtk.Button(
@@ -241,7 +250,11 @@ class KeyboardPage(Gtk.Box):
         effect = saved.get("four_zone_mode")
         if effect and has_effects:
             mode = effect.get("mode", 0)
-            self.effect_mode_row.set_selected(mode)
+            # The effect list shrank when the WMI-derived entries were replaced
+            # by the verified ENE ones, so a settings file written by an older
+            # build can hold an index past the end of the model. Clamp it.
+            n_effects = self.effect_mode_row.get_model().get_n_items()
+            self.effect_mode_row.set_selected(min(mode, n_effects - 1))
             speed = effect.get("speed", 5)
             self.speed_scale.set_value(speed)
             r = effect.get("red", 0)
